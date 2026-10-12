@@ -17,10 +17,8 @@ app.use(express.static('public'));
 
 const upload = multer({ dest: 'uploads/' });
 
-// Inicializar Gemini AI
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
-// Archivos de almacenamiento local
 const DB_FILE = './db_prospectos.json';
 const CHATS_FILE = './db_chats.json';
 const CONFIG_FILE = './db_config.json';
@@ -28,13 +26,26 @@ const CONFIG_FILE = './db_config.json';
 let prospectos = fs.existsSync(DB_FILE) ? JSON.parse(fs.readFileSync(DB_FILE, 'utf8')) : [];
 let historialChats = fs.existsSync(CHATS_FILE) ? JSON.parse(fs.readFileSync(CHATS_FILE, 'utf8')) : {};
 let config = fs.existsSync(CONFIG_FILE) ? JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')) : {
-    systemPrompt: 'Eres el asistente virtual comercial de Zenix, software POS y facturación electrónica. Responde conciso, comercial y amable para agendar una demo.',
+    systemPrompt: `Eres Camila, asesora comercial humana de Zenix POS y Facturación Electrónica DIAN (zenixfacturacionelectronica.online). 
+
+Tu objetivo es conversar de manera super natural, amable y cercana por WhatsApp como una persona real para agendar una prueba gratis o demo del sistema POS.
+
+REGLAS DE COMPORTAMIENTO HUMANO:
+1. Habla en primera persona ("Hola, soy Camila de Zenix", "Te cuento...", "Si quieres te ayudo a activarlo").
+2. Escribe mensajes CORTOS y fluidos (1 o 2 frases por mensaje máximo). NUNCA mandes viñetas rígidas, listas largas ni bloques enormes de texto.
+3. Sé empática y natural. Usa emoticones cotidianos (😊, 👋, 💻, 👍) sin exagerar.
+4. NUNCA suenes como bot ni digas "En qué puedo asistirte hoy" o "Como modelo de inteligencia artificial".
+5. Enfócate en resolver lo que pregunta el cliente y cierra SIEMPRE con una pregunta sencilla para continuar la charla (ej. "¿Tu negocio es un restaurante o una tienda?", "¿Qué programa usan actualmente para facturar?").
+
+CONOCIMIENTO DE PRODUCTO:
+- Zenix integra Punto de Venta (POS), inventario, caja chica, cartera y facturación electrónica DIAN.
+- Sirve para restaurantes, minimarkets, ferreterías, droguerías, tiendas de ropa, etc.
+- Funciona desde computador, tablet o celular.
+- Ofrecemos 14 días de prueba totalmente gratis sin compromiso.`,
     mensajePlantilla: '¡Hola {Nombre}! 👋 Me comunico de Zenix POS y Facturación Electrónica. Vemos que administras {Empresa}. ¿Te gustaría probar gratis durante 14 días nuestro sistema POS e impulsar tus ventas?',
     delayMin: 15,
     delayMax: 35,
-    limiteDiario: 100,
-    horaInicio: 8,
-    horaFin: 18
+    limiteDiario: 100
 };
 
 let prospectandoEnProgreso = false;
@@ -50,7 +61,6 @@ function guardarBD() {
     }
 }
 
-// Configuración Puppeteer Linux
 const client = new Client({
     authStrategy: new LocalAuth(),
     puppeteer: {
@@ -91,11 +101,13 @@ client.on('authenticated', () => {
 });
 
 client.on('ready', () => {
-    console.log('✅ WhatsApp Vinculado.');
+    console.log('✅ WhatsApp Vinculado y Activo.');
     estadoSesion = 'Conectado';
     qrActual = null;
     io.emit('estado', estadoSesion);
     io.emit('qr_resuelto');
+    
+    iniciarProspeccionMasiva();
 });
 
 client.on('disconnected', () => {
@@ -115,7 +127,7 @@ client.on('message', async (msg) => {
 
     let prospecto = prospectos.find(p => p.telefono == numero || p.telefono.endsWith(numero));
     if (!prospecto) {
-        prospecto = { empresa: 'Cliente WhatsApp', telefono: numero, estado: 'Respondió', ultimoMensaje: textoCliente, iaActiva: true, tag: 'Interesado' };
+        prospecto = { empresa: 'Cliente WhatsApp', telefono: numero, estado: 'Respondió', ultimoMensaje: textoCliente, iaActiva: true };
         prospectos.push(prospecto);
     } else {
         prospecto.estado = 'Respondió';
@@ -126,7 +138,6 @@ client.on('message', async (msg) => {
 
     io.emit('nuevo_mensaje', { telefono: numero, mensaje: msgEntrante, prospectos, metricas: calcularMetricas() });
 
-    // Respuesta IA con Gemini
     if (prospecto.iaActiva !== false) {
         try {
             const promptCompleto = `${config.systemPrompt}\n\nEl cliente dijo: "${textoCliente}".`;
@@ -149,10 +160,15 @@ client.on('message', async (msg) => {
     }
 });
 
-// Motor de prospección masiva con pausas antibloqueo
 async function iniciarProspeccionMasiva() {
-    if (prospectandoEnProgreso || estadoSesion !== 'Conectado') return;
+    if (prospectandoEnProgreso) return;
+    if (estadoSesion !== 'Conectado' && (!client.info || !client.info.wid)) {
+        console.log('⏳ Esperando que WhatsApp esté completamente conectado...');
+        return;
+    }
+
     prospectandoEnProgreso = true;
+    console.log('🚀 Iniciando motor de prospección masiva...');
 
     for (let p of prospectos) {
         if (p.estado === 'Pendiente') {
@@ -172,6 +188,7 @@ async function iniciarProspeccionMasiva() {
                 mensajeInicial = mensajeInicial.replace(/\{Nombre\}/g, p.empresa || 'Cliente');
                 mensajeInicial = mensajeInicial.replace(/\{Empresa\}/g, p.empresa || 'su negocio');
 
+                console.log(`📤 Enviando mensaje a ${p.empresa} (${chatId})...`);
                 await client.sendMessage(chatId, mensajeInicial);
 
                 p.estado = 'Contactado';
@@ -185,20 +202,22 @@ async function iniciarProspeccionMasiva() {
                 guardarBD();
                 io.emit('actualizar_lista', { prospectos, metricas: calcularMetricas() });
 
-                // Retardo aleatorio entre min y max segundos
                 const minMs = (config.delayMin || 15) * 1000;
                 const maxMs = (config.delayMax || 35) * 1000;
                 const delayMs = Math.floor(Math.random() * (maxMs - minMs + 1)) + minMs;
 
+                console.log(`⏱️ Pausa de ${Math.round(delayMs/1000)}s antes del siguiente envío...`);
                 await new Promise(resolve => setTimeout(resolve, delayMs));
             } catch (e) {
-                console.error(`Error enviando a ${p.telefono}:`, e);
+                console.error(`❌ Error enviando a ${p.telefono}:`, e);
                 p.estado = 'Error';
                 guardarBD();
+                io.emit('actualizar_lista', { prospectos, metricas: calcularMetricas() });
             }
         }
     }
     prospectandoEnProgreso = false;
+    console.log('🏁 Prospección finalizada o en espera de nuevos pendientes.');
 }
 
 function calcularMetricas() {
@@ -220,6 +239,11 @@ io.on('connection', (socket) => {
 app.get('/api/prospectos', (req, res) => res.json(prospectos));
 app.get('/api/config', (req, res) => res.json(config));
 app.get('/api/metricas', (req, res) => res.json(calcularMetricas()));
+
+app.post('/api/iniciar-prospeccion', (req, res) => {
+    iniciarProspeccionMasiva();
+    res.json({ success: true, message: 'Prospección disparada manualmente' });
+});
 
 app.post('/api/config', (req, res) => {
     const { systemPrompt, mensajePlantilla, delayMin, delayMax, limiteDiario } = req.body;
@@ -298,7 +322,10 @@ app.post('/api/cargar-excel', upload.single('archivo'), (req, res) => {
         fs.unlinkSync(req.file.path);
         
         io.emit('actualizar_lista', { prospectos, metricas: calcularMetricas() });
-        iniciarProspeccionMasiva();
+        
+        setTimeout(() => {
+            iniciarProspeccionMasiva();
+        }, 1000);
         
         res.json({ success: true, agregados, total: prospectos.length });
     } catch (e) {
