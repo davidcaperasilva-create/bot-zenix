@@ -46,7 +46,7 @@ function guardarBD() {
     }
 }
 
-const UA_WIN = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36';
+const UA_WIN_FULL = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
 const client = new Client({
     authStrategy: new LocalAuth(),
@@ -67,7 +67,7 @@ const client = new Client({
             '--disable-background-timer-throttling',
             '--disable-backgrounding-occluded-windows',
             '--disable-renderer-backgrounding',
-            `--user-agent=${UA_WIN}`
+            `--user-agent=${UA_WIN_FULL}`
         ]
     }
 });
@@ -87,19 +87,8 @@ setInterval(async () => {
 }, 30000);
 
 client.on('qr', async (qr) => {
-    console.log('🔄 Nuevo Código QR generado.');
+    console.log('🔄 Código QR listo para escaneo.');
     estadoSesion = 'Esperando escaneo';
-    
-    // Inyectar Headers de Plataforma Windows directamente en Puppeteer
-    try {
-        if (client.pupPage) {
-            await client.pupPage.setUserAgent(UA_WIN);
-            await client.pupPage.setExtraHTTPHeaders({
-                'sec-ch-ua-platform': '"Windows"',
-                'sec-ch-ua-mobile': '?0'
-            });
-        }
-    } catch (eUa) {}
 
     try {
         qrActual = await QRCode.toDataURL(qr);
@@ -127,7 +116,7 @@ client.on('ready', () => {
 });
 
 client.on('auth_failure', (msg) => {
-    console.error('❌ Falla autenticación WhatsApp:', msg);
+    console.error('❌ Falla autenticación:', msg);
     estadoSesion = 'Desconectado';
     qrActual = null;
     io.emit('estado', estadoSesion);
@@ -174,8 +163,6 @@ client.on('message', async (msg) => {
             });
 
             const textoBot = response.text;
-            
-            // Pausa natural simulando escritura humana sin bloquear el socket
             await new Promise(r => setTimeout(r, 2000));
 
             await client.sendMessage(msg.from, textoBot);
@@ -192,7 +179,6 @@ client.on('message', async (msg) => {
     }
 });
 
-// Prospección con pausa anti-saturación para NO congelar el celular
 async function iniciarProspeccionMasiva() {
     if (prospectandoEnProgreso) return;
     if (!client.info || !client.info.wid) {
@@ -284,7 +270,7 @@ app.get('/api/metricas', (req, res) => res.json(calcularMetricas()));
 
 app.post('/api/reset-sesion', async (req, res) => {
     try {
-        console.log('🔄 Eliminando credenciales y generando nuevo QR...');
+        console.log('🔄 Eliminando credenciales y borrando .wwebjs_auth...');
         estadoSesion = 'Desconectado';
         qrActual = null;
         io.emit('estado', estadoSesion);
@@ -360,7 +346,6 @@ app.post('/api/enviar-manual', async (req, res) => {
     }
 });
 
-// Importación de Excel SIN AUTO-DISPARO INMEDIATO para dar tiempo a la sincronización
 app.post('/api/cargar-excel', upload.single('archivo'), (req, res) => {
     try {
         const workbook = xlsx.readFile(req.file.path);
@@ -400,5 +385,21 @@ app.post('/api/cargar-excel', upload.single('archivo'), (req, res) => {
 const PORT = process.env.PORT || 10000;
 server.listen(PORT, () => {
     console.log(`🚀 Servidor Zenix escuchando en puerto ${PORT}`);
+
+    // Inyectar spoofing directo de navegador antes de navegar a WhatsApp Web
+    client.on('loading_screen', async () => {
+        try {
+            if (client.pupPage) {
+                await client.pupPage.evaluateOnNewDocument(() => {
+                    Object.defineProperty(navigator, 'platform', { get: () => 'Win32' });
+                    Object.defineProperty(navigator, 'vendor', { get: () => 'Google Inc.' });
+                    Object.defineProperty(navigator, 'userAgent', { 
+                        get: () => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36' 
+                    });
+                });
+            }
+        } catch (e) {}
+    });
+
     client.initialize();
 });
