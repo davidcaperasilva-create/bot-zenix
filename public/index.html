@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Zenix Control Center - Fase 1</title>
+    <title>Zenix Enterprise SaaS Center</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="/socket.io/socket.io.js"></script>
 </head>
@@ -13,11 +13,11 @@
         <header class="flex justify-between items-center mb-6 border-b border-slate-800 pb-4">
             <div>
                 <h1 class="text-3xl font-bold text-blue-400">Zenix Control Center</h1>
-                <p class="text-slate-400 text-sm">Gestión de WhatsApp, IA Copilot y Plantillas Dinámicas</p>
+                <p class="text-slate-400 text-sm">Plataforma Enterprise de Prospección y Gestión de WhatsApp con IA</p>
             </div>
             <div class="flex items-center gap-3">
-                <button onclick="abrirModalConfig()" class="bg-slate-700 hover:bg-slate-600 text-slate-200 font-semibold px-4 py-2 rounded-lg text-sm transition shadow flex items-center gap-2">
-                    ⚙️ Configurar Prompt / Plantilla
+                <button onclick="abrirModalConfig()" class="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 font-semibold px-4 py-2 rounded-lg text-sm transition flex items-center gap-2">
+                    ⚙️ Ajustes & Anti-Ban
                 </button>
                 <input type="file" id="input-excel" accept=".xlsx, .xls" class="hidden" onchange="subirExcel(event)">
                 <button onclick="document.getElementById('input-excel').click()" class="bg-blue-600 hover:bg-blue-500 text-white font-semibold px-4 py-2 rounded-lg text-sm transition shadow flex items-center gap-2">
@@ -27,6 +27,30 @@
             </div>
         </header>
 
+        <!-- Funnel / Tarjetas Métricas -->
+        <div class="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
+            <div class="bg-slate-800 border border-slate-700 rounded-xl p-4">
+                <p class="text-xs text-slate-400 font-medium">Total Prospectos</p>
+                <p id="m-total" class="text-2xl font-bold text-slate-100">0</p>
+            </div>
+            <div class="bg-slate-800 border border-slate-700 rounded-xl p-4">
+                <p class="text-xs text-slate-400 font-medium">Pendientes</p>
+                <p id="m-pendientes" class="text-2xl font-bold text-amber-400">0</p>
+            </div>
+            <div class="bg-slate-800 border border-slate-700 rounded-xl p-4">
+                <p class="text-xs text-slate-400 font-medium">Contactados</p>
+                <p id="m-contactados" class="text-2xl font-bold text-blue-400">0</p>
+            </div>
+            <div class="bg-slate-800 border border-slate-700 rounded-xl p-4">
+                <p class="text-xs text-slate-400 font-medium">Respondieron (Leads)</p>
+                <p id="m-respondieron" class="text-2xl font-bold text-emerald-400">0</p>
+            </div>
+            <div class="bg-slate-800 border border-slate-700 rounded-xl p-4">
+                <p class="text-xs text-slate-400 font-medium">Envíos Hoy / Límite</p>
+                <p id="m-limite" class="text-2xl font-bold text-indigo-400">0 / 100</p>
+            </div>
+        </div>
+
         <!-- Grid Principal -->
         <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
             
@@ -35,7 +59,7 @@
                 <!-- Tarjeta QR -->
                 <div class="bg-slate-800 border border-slate-700 rounded-xl p-5 text-center">
                     <h2 class="text-lg font-bold text-slate-200 mb-3">Conexión de WhatsApp</h2>
-                    <div id="contenedor-qr" class="flex justify-center items-center min-h-[140px] bg-slate-900 rounded-lg p-3">
+                    <div id="contenedor-qr" class="flex justify-center items-center min-h-[130px] bg-slate-900 rounded-lg p-3">
                         <p class="text-emerald-400 font-medium">✅ WhatsApp Vinculado y Activo</p>
                     </div>
                 </div>
@@ -43,20 +67,19 @@
                 <!-- Lista de Prospectos -->
                 <div class="bg-slate-800 border border-slate-700 rounded-xl p-5">
                     <h2 class="text-lg font-bold text-slate-200 mb-3">Lista de Prospectos</h2>
-                    <div id="lista-prospectos" class="space-y-2 max-h-[380px] overflow-y-auto pr-2">
+                    <div id="lista-prospectos" class="space-y-2 max-h-[360px] overflow-y-auto pr-2">
                         <p class="text-slate-500 text-sm">No hay prospectos cargados.</p>
                     </div>
                 </div>
             </div>
 
-            <!-- Columna Derecha: Visualizador de Chat en Vivo y Modo Copiloto -->
-            <div class="lg:col-span-2 bg-slate-800 border border-slate-700 rounded-xl p-5 flex flex-col h-[620px]">
+            <!-- Columna Derecha: Visualizador de Chat & Copiloto -->
+            <div class="lg:col-span-2 bg-slate-800 border border-slate-700 rounded-xl p-5 flex flex-col h-[580px]">
                 <div class="border-b border-slate-700 pb-3 mb-4 flex justify-between items-center">
                     <div>
                         <h2 id="chat-titulo" class="text-lg font-bold text-blue-400">Selecciona un prospecto para ver el chat</h2>
                         <p id="chat-subtitulo" class="text-xs text-slate-400">Monitoreo en tiempo real</p>
                     </div>
-                    <!-- Interruptor Modo Copiloto -->
                     <div id="panel-copiloto" class="hidden flex items-center gap-3 bg-slate-900 px-3 py-1.5 rounded-lg border border-slate-700">
                         <span class="text-xs text-slate-300 font-medium">Modo IA:</span>
                         <button id="btn-toggle-ia" onclick="toggleIA()" class="text-xs font-semibold px-3 py-1 rounded transition bg-emerald-600 text-white">
@@ -72,7 +95,7 @@
 
                 <!-- Input para respuesta manual de Asesor -->
                 <div id="panel-envio-manual" class="hidden flex gap-2">
-                    <input type="text" id="input-mensaje-manual" placeholder="Escribe un mensaje manual como Asesor..." class="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-4 py-2 text-sm text-white focus:outline-none focus:border-blue-500" onkeypress="if(event.key==='Enter') enviarMensajeManual()">
+                    <input type="text" id="input-mensaje-manual" placeholder="Escribe un mensaje como Asesor Humano..." class="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-4 py-2 text-sm text-white focus:outline-none focus:border-blue-500" onkeypress="if(event.key==='Enter') enviarMensajeManual()">
                     <button onclick="enviarMensajeManual()" class="bg-blue-600 hover:bg-blue-500 text-white font-semibold px-4 py-2 rounded-lg text-sm transition">
                         Enviar
                     </button>
@@ -82,19 +105,34 @@
         </div>
     </div>
 
-    <!-- Modal Configuración de Prompt / Plantilla -->
+    <!-- Modal Configuración -->
     <div id="modal-config" class="fixed inset-0 bg-black/70 backdrop-blur-sm flex justify-center items-center hidden z-50">
         <div class="bg-slate-800 border border-slate-700 rounded-xl p-6 w-full max-w-2xl shadow-2xl space-y-4">
-            <h2 class="text-xl font-bold text-blue-400">Configuración de IA y Plantilla de Prospección</h2>
+            <h2 class="text-xl font-bold text-blue-400">Configuración Comercial & Parámetros Anti-Ban</h2>
             
             <div>
-                <label class="block text-xs text-slate-400 font-semibold mb-1">System Prompt de Gemini AI (Instrucciones comerciales)</label>
-                <textarea id="cfg-prompt" rows="4" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-3 text-sm text-slate-200 focus:outline-none focus:border-blue-500"></textarea>
+                <label class="block text-xs text-slate-400 font-semibold mb-1">System Prompt de Gemini AI</label>
+                <textarea id="cfg-prompt" rows="3" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-3 text-sm text-slate-200 focus:outline-none focus:border-blue-500"></textarea>
             </div>
 
             <div>
-                <label class="block text-xs text-slate-400 font-semibold mb-1">Plantilla de Mensaje Inicial (Variables: <code class="text-blue-400">{Nombre}</code>, <code class="text-blue-400">{Empresa}</code>)</label>
-                <textarea id="cfg-plantilla" rows="3" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-3 text-sm text-slate-200 focus:outline-none focus:border-blue-500"></textarea>
+                <label class="block text-xs text-slate-400 font-semibold mb-1">Plantilla de Mensaje (Variables: <code class="text-blue-400">{Nombre}</code>, <code class="text-blue-400">{Empresa}</code>)</label>
+                <textarea id="cfg-plantilla" rows="2" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-3 text-sm text-slate-200 focus:outline-none focus:border-blue-500"></textarea>
+            </div>
+
+            <div class="grid grid-cols-3 gap-3">
+                <div>
+                    <label class="block text-xs text-slate-400 font-semibold mb-1">Pausa Mínima (seg)</label>
+                    <input type="number" id="cfg-min" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-sm text-slate-200">
+                </div>
+                <div>
+                    <label class="block text-xs text-slate-400 font-semibold mb-1">Pausa Máxima (seg)</label>
+                    <input type="number" id="cfg-max" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-sm text-slate-200">
+                </div>
+                <div>
+                    <label class="block text-xs text-slate-400 font-semibold mb-1">Límite Diario Envíos</label>
+                    <input type="number" id="cfg-limite" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-sm text-slate-200">
+                </div>
             </div>
 
             <div class="flex justify-end gap-3 pt-2">
@@ -125,8 +163,8 @@
         socket.on('qr', (urlQr) => {
             document.getElementById('contenedor-qr').innerHTML = `
                 <div class="text-center">
-                    <img src="${urlQr}" class="w-36 h-36 mx-auto rounded border border-slate-600 mb-2">
-                    <p class="text-xs text-slate-400">Escanea este código desde WhatsApp</p>
+                    <img src="${urlQr}" class="w-32 h-32 mx-auto rounded border border-slate-600 mb-1">
+                    <p class="text-[11px] text-slate-400">Escanea desde WhatsApp</p>
                 </div>`;
         });
 
@@ -138,6 +176,7 @@
             todosLosProspectos = data.prospectos;
             historialCompleto = data.historialChats;
             if (data.config) configActual = data.config;
+            if (data.metricas) actualizarMetricas(data.metricas);
             renderProspectos();
         });
 
@@ -145,6 +184,7 @@
             todosLosProspectos = data.prospectos;
             if (!historialCompleto[data.telefono]) historialCompleto[data.telefono] = [];
             historialCompleto[data.telefono].push(data.mensaje);
+            if (data.metricas) actualizarMetricas(data.metricas);
             renderProspectos();
 
             if (prospectoActivo === data.telefono) {
@@ -152,11 +192,20 @@
             }
         });
 
-        socket.on('actualizar_lista', (prospectos) => {
-            todosLosProspectos = prospectos;
+        socket.on('actualizar_lista', (data) => {
+            todosLosProspectos = data.prospectos || data;
+            if (data.metricas) actualizarMetricas(data.metricas);
             renderProspectos();
             if (prospectoActivo) actualizarEstadoCopiloto();
         });
+
+        function actualizarMetricas(m) {
+            document.getElementById('m-total').innerText = m.total || 0;
+            document.getElementById('m-pendientes').innerText = m.pendientes || 0;
+            document.getElementById('m-contactados').innerText = m.contactados || 0;
+            document.getElementById('m-respondieron').innerText = m.respondieron || 0;
+            document.getElementById('m-limite').innerText = `${m.enviosHoy || 0} / ${m.limiteDiario || 100}`;
+        }
 
         function renderProspectos() {
             const cont = document.getElementById('lista-prospectos');
@@ -279,6 +328,9 @@
         function abrirModalConfig() {
             document.getElementById('cfg-prompt').value = configActual.systemPrompt || '';
             document.getElementById('cfg-plantilla').value = configActual.mensajePlantilla || '';
+            document.getElementById('cfg-min').value = configActual.delayMin || 15;
+            document.getElementById('cfg-max').value = configActual.delayMax || 35;
+            document.getElementById('cfg-limite').value = configActual.limiteDiario || 100;
             document.getElementById('modal-config').classList.remove('hidden');
         }
 
@@ -289,16 +341,19 @@
         async function guardarConfig() {
             const systemPrompt = document.getElementById('cfg-prompt').value.trim();
             const mensajePlantilla = document.getElementById('cfg-plantilla').value.trim();
+            const delayMin = document.getElementById('cfg-min').value;
+            const delayMax = document.getElementById('cfg-max').value;
+            const limiteDiario = document.getElementById('cfg-limite').value;
 
             const res = await fetch('/api/config', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ systemPrompt, mensajePlantilla })
+                body: JSON.stringify({ systemPrompt, mensajePlantilla, delayMin, delayMax, limiteDiario })
             });
             const data = await res.json();
             if (data.success) {
                 configActual = data.config;
-                alert('✅ Configuración de Prompt y Plantilla guardada correctamente.');
+                alert('✅ Configuración guardada correctamente.');
                 cerrarModalConfig();
             }
         }

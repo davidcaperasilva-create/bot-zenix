@@ -17,8 +17,10 @@ app.use(express.static('public'));
 
 const upload = multer({ dest: 'uploads/' });
 
+// Inicializar Gemini AI
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
+// Archivos de almacenamiento local
 const DB_FILE = './db_prospectos.json';
 const CHATS_FILE = './db_chats.json';
 const CONFIG_FILE = './db_config.json';
@@ -27,10 +29,16 @@ let prospectos = fs.existsSync(DB_FILE) ? JSON.parse(fs.readFileSync(DB_FILE, 'u
 let historialChats = fs.existsSync(CHATS_FILE) ? JSON.parse(fs.readFileSync(CHATS_FILE, 'utf8')) : {};
 let config = fs.existsSync(CONFIG_FILE) ? JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')) : {
     systemPrompt: 'Eres el asistente virtual comercial de Zenix, software POS y facturación electrónica. Responde conciso, comercial y amable para agendar una demo.',
-    mensajePlantilla: '¡Hola {Nombre}! 👋 Me comunico de Zenix POS y Facturación Electrónica. Vemos que administras {Empresa}. ¿Te gustaría probar gratis durante 14 días nuestro sistema POS e impulsar tus ventas?'
+    mensajePlantilla: '¡Hola {Nombre}! 👋 Me comunico de Zenix POS y Facturación Electrónica. Vemos que administras {Empresa}. ¿Te gustaría probar gratis durante 14 días nuestro sistema POS e impulsar tus ventas?',
+    delayMin: 15,
+    delayMax: 35,
+    limiteDiario: 100,
+    horaInicio: 8,
+    horaFin: 18
 };
 
 let prospectandoEnProgreso = false;
+let enviosHoy = 0;
 
 function guardarBD() {
     try {
@@ -38,10 +46,11 @@ function guardarBD() {
         fs.writeFileSync(CHATS_FILE, JSON.stringify(historialChats, null, 2));
         fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
     } catch (e) {
-        console.error('Error al guardar datos locales:', e);
+        console.error('Error guardando archivos BD:', e);
     }
 }
 
+// Configuración Puppeteer Linux
 const client = new Client({
     authStrategy: new LocalAuth(),
     puppeteer: {
@@ -63,14 +72,14 @@ let qrActual = null;
 let estadoSesion = 'Desconectado';
 
 client.on('qr', async (qr) => {
-    console.log('🔄 Nuevo código QR generado.');
+    console.log('🔄 QR Generado.');
     estadoSesion = 'Esperando escaneo';
     try {
         qrActual = await QRCode.toDataURL(qr);
         io.emit('qr', qrActual);
         io.emit('estado', estadoSesion);
     } catch (e) {
-        console.error('Error generando QR:', e);
+        console.error('Error QR:', e);
     }
 });
 
@@ -82,7 +91,7 @@ client.on('authenticated', () => {
 });
 
 client.on('ready', () => {
-    console.log('✅ Cliente de WhatsApp vinculado y activo.');
+    console.log('✅ WhatsApp Vinculado.');
     estadoSesion = 'Conectado';
     qrActual = null;
     io.emit('estado', estadoSesion);
@@ -106,7 +115,7 @@ client.on('message', async (msg) => {
 
     let prospecto = prospectos.find(p => p.telefono == numero || p.telefono.endsWith(numero));
     if (!prospecto) {
-        prospecto = { empresa: 'Cliente WhatsApp', telefono: numero, estado: 'Respondió', ultimoMensaje: textoCliente, iaActiva: true };
+        prospecto = { empresa: 'Cliente WhatsApp', telefono: numero, estado: 'Respondió', ultimoMensaje: textoCliente, iaActiva: true, tag: 'Interesado' };
         prospectos.push(prospecto);
     } else {
         prospecto.estado = 'Respondió';
@@ -115,9 +124,9 @@ client.on('message', async (msg) => {
     }
     guardarBD();
 
-    io.emit('nuevo_mensaje', { telefono: numero, mensaje: msgEntrante, prospectos });
+    io.emit('nuevo_mensaje', { telefono: numero, mensaje: msgEntrante, prospectos, metricas: calcularMetricas() });
 
-    // Verificar si el Modo Copiloto está activo para este prospecto
+    // Respuesta IA con Gemini
     if (prospecto.iaActiva !== false) {
         try {
             const promptCompleto = `${config.systemPrompt}\n\nEl cliente dijo: "${textoCliente}".`;
@@ -133,19 +142,25 @@ client.on('message', async (msg) => {
             historialChats[numero].push(msgBot);
             guardarBD();
 
-            io.emit('nuevo_mensaje', { telefono: numero, mensaje: msgBot, prospectos });
+            io.emit('nuevo_mensaje', { telefono: numero, mensaje: msgBot, prospectos, metricas: calcularMetricas() });
         } catch (err) {
-            console.error('Error al responder con Gemini AI:', err);
+            console.error('Error Gemini AI:', err);
         }
     }
 });
 
+// Motor de prospección masiva con pausas antibloqueo
 async function iniciarProspeccionMasiva() {
     if (prospectandoEnProgreso || estadoSesion !== 'Conectado') return;
     prospectandoEnProgreso = true;
 
     for (let p of prospectos) {
         if (p.estado === 'Pendiente') {
+            if (enviosHoy >= (config.limiteDiario || 100)) {
+                console.log('⚠️ Límite diario alcanzado.');
+                break;
+            }
+
             try {
                 let telLimpio = String(p.telefono).replace(/\D/g, '');
                 if (!telLimpio.startsWith('57') && telLimpio.length === 10) {
@@ -153,7 +168,6 @@ async function iniciarProspeccionMasiva() {
                 }
                 const chatId = telLimpio + '@c.us';
 
-                // Reemplazo de variables dinámicas {Nombre} y {Empresa}
                 let mensajeInicial = config.mensajePlantilla || '¡Hola {Nombre}! Conoce Zenix POS.';
                 mensajeInicial = mensajeInicial.replace(/\{Nombre\}/g, p.empresa || 'Cliente');
                 mensajeInicial = mensajeInicial.replace(/\{Empresa\}/g, p.empresa || 'su negocio');
@@ -167,10 +181,16 @@ async function iniciarProspeccionMasiva() {
                 if (!historialChats[p.telefono]) historialChats[p.telefono] = [];
                 historialChats[p.telefono].push({ emisor: 'bot', texto: mensajeInicial, hora: new Date().toLocaleTimeString() });
 
+                enviosHoy++;
                 guardarBD();
-                io.emit('actualizar_lista', prospectos);
+                io.emit('actualizar_lista', { prospectos, metricas: calcularMetricas() });
 
-                await new Promise(resolve => setTimeout(resolve, 12000));
+                // Retardo aleatorio entre min y max segundos
+                const minMs = (config.delayMin || 15) * 1000;
+                const maxMs = (config.delayMax || 35) * 1000;
+                const delayMs = Math.floor(Math.random() * (maxMs - minMs + 1)) + minMs;
+
+                await new Promise(resolve => setTimeout(resolve, delayMs));
             } catch (e) {
                 console.error(`Error enviando a ${p.telefono}:`, e);
                 p.estado = 'Error';
@@ -181,21 +201,33 @@ async function iniciarProspeccionMasiva() {
     prospectandoEnProgreso = false;
 }
 
+function calcularMetricas() {
+    const total = prospectos.length;
+    const contactados = prospectos.filter(p => p.estado === 'Contactado' || p.estado === 'Respondió').length;
+    const respondieron = prospectos.filter(p => p.estado === 'Respondió').length;
+    const pendientes = prospectos.filter(p => p.estado === 'Pendiente').length;
+    return { total, contactados, respondieron, pendientes, enviosHoy, limiteDiario: config.limiteDiario || 100 };
+}
+
 io.on('connection', (socket) => {
     if (client.info && client.info.wid) estadoSesion = 'Conectado';
     socket.emit('estado', estadoSesion);
     if (estadoSesion === 'Conectado') socket.emit('qr_resuelto');
     else if (qrActual) socket.emit('qr', qrActual);
-    socket.emit('cargar_chats', { prospectos, historialChats, config });
+    socket.emit('cargar_chats', { prospectos, historialChats, config, metricas: calcularMetricas() });
 });
 
 app.get('/api/prospectos', (req, res) => res.json(prospectos));
 app.get('/api/config', (req, res) => res.json(config));
+app.get('/api/metricas', (req, res) => res.json(calcularMetricas()));
 
 app.post('/api/config', (req, res) => {
-    const { systemPrompt, mensajePlantilla } = req.body;
+    const { systemPrompt, mensajePlantilla, delayMin, delayMax, limiteDiario } = req.body;
     if (systemPrompt) config.systemPrompt = systemPrompt;
     if (mensajePlantilla) config.mensajePlantilla = mensajePlantilla;
+    if (delayMin) config.delayMin = parseInt(delayMin);
+    if (delayMax) config.delayMax = parseInt(delayMax);
+    if (limiteDiario) config.limiteDiario = parseInt(limiteDiario);
     guardarBD();
     io.emit('config_actualizada', config);
     res.json({ success: true, config });
@@ -207,7 +239,7 @@ app.post('/api/toggle-ia', (req, res) => {
     if (prospecto) {
         prospecto.iaActiva = iaActiva;
         guardarBD();
-        io.emit('actualizar_lista', prospectos);
+        io.emit('actualizar_lista', { prospectos, metricas: calcularMetricas() });
         res.json({ success: true, iaActiva: prospecto.iaActiva });
     } else {
         res.status(404).json({ error: 'Prospecto no encontrado' });
@@ -231,10 +263,10 @@ app.post('/api/enviar-manual', async (req, res) => {
         if (prospecto) prospecto.ultimoMensaje = texto;
 
         guardarBD();
-        io.emit('nuevo_mensaje', { telefono, mensaje: msgManual, prospectos });
+        io.emit('nuevo_mensaje', { telefono, mensaje: msgManual, prospectos, metricas: calcularMetricas() });
         res.json({ success: true });
     } catch (e) {
-        res.status(500).json({ error: 'Error enviando mensaje manual' });
+        res.status(500).json({ error: 'Error enviando mensaje' });
     }
 });
 
@@ -265,18 +297,18 @@ app.post('/api/cargar-excel', upload.single('archivo'), (req, res) => {
         guardarBD();
         fs.unlinkSync(req.file.path);
         
-        io.emit('actualizar_lista', prospectos);
+        io.emit('actualizar_lista', { prospectos, metricas: calcularMetricas() });
         iniciarProspeccionMasiva();
         
         res.json({ success: true, agregados, total: prospectos.length });
     } catch (e) {
-        console.error("Error procesando Excel:", e);
-        res.status(500).json({ error: 'Error al procesar el archivo Excel' });
+        console.error("Error Excel:", e);
+        res.status(500).json({ error: 'Error procesando Excel' });
     }
 });
 
 const PORT = process.env.PORT || 10000;
 server.listen(PORT, () => {
-    console.log(`🚀 Servidor activo en puerto ${PORT}`);
+    console.log(`🚀 Servidor Zenix listo en puerto ${PORT}`);
     client.initialize();
 });
