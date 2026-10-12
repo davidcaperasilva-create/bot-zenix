@@ -1,38 +1,38 @@
 const express = require('express');
+const http = require('http');
+const { Server } = require('socket.io');
 const { Client, LocalAuth } = require('whatsapp-web.js');
-const qrcode = require('qrcode-terminal');
+const QRCode = require('qrcode');
 const xlsx = require('xlsx');
 const multer = require('multer');
 const { GoogleGenAI } = require('@google/genai');
-const path = require('path');
 const fs = require('fs');
 
 const app = express();
+const server = http.createServer(app);
+const io = new Server(server);
+
 app.use(express.json());
 app.use(express.static('public'));
 
 const upload = multer({ dest: 'uploads/' });
 
-// Inicializar cliente Gemini con variable de entorno
+// Inicializar cliente Gemini
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
-// Archivo de persistencia de datos local
+// Persistencia de datos
 const DB_FILE = './db_prospectos.json';
-let prospectos = [];
+const CHATS_FILE = './db_chats.json';
 
-if (fs.existsSync(DB_FILE)) {
-    try {
-        prospectos = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
-    } catch (e) {
-        prospectos = [];
-    }
-}
+let prospectos = fs.existsSync(DB_FILE) ? JSON.parse(fs.readFileSync(DB_FILE, 'utf8')) : [];
+let historialChats = fs.existsSync(CHATS_FILE) ? JSON.parse(fs.readFileSync(CHATS_FILE, 'utf8')) : {};
 
 function guardarBD() {
     fs.writeFileSync(DB_FILE, JSON.stringify(prospectos, null, 2));
+    fs.writeFileSync(CHATS_FILE, JSON.stringify(historialChats, null, 2));
 }
 
-// Configuración de Puppeteer optimizada para Render
+// Configuración de Puppeteer para Render
 const client = new Client({
     authStrategy: new LocalAuth(),
     puppeteer: {
@@ -50,99 +50,105 @@ const client = new Client({
     }
 });
 
-client.on('qr', (qr) => {
-    console.log('\n--- ESCANEA ESTE CÓDIGO QR DESDE TU WHATSAPP ---');
-    qrcode.generate(qr, { small: true });
+let qrActual = null;
+let estadoSesion = 'Desconectado';
+
+client.on('qr', async (qr) => {
+    console.log('🔄 Nuevo código QR generado.');
+    estadoSesion = 'Esperando escaneo';
+    qrActual = await QRCode.toDataURL(qr);
+    io.emit('qr', qrActual);
+    io.emit('estado', estadoSesion);
 });
 
 client.on('ready', () => {
-    console.log('✅ Cliente de WhatsApp vinculado y listo.');
+    console.log('✅ WhatsApp vinculado correctamente.');
+    estadoSesion = 'Conectado';
+    qrActual = null;
+    io.emit('estado', estadoSesion);
+    io.emit('qr_resuelto');
 });
 
-// Evento al recibir mensajes entrantes
 client.on('message', async (msg) => {
     if (msg.from.endsWith('@g.us') || msg.from.endsWith('@newsletter')) return;
 
     const numero = msg.from.replace('@c.us', '');
-    console.log(`📩 Mensaje recibido de ${numero}: ${msg.body}`);
+    const textoCliente = msg.body;
 
+    // Guardar chat
+    if (!historialChats[numero]) historialChats[numero] = [];
+    const msgEntrante = { emisor: 'cliente', texto: textoCliente, hora: new Date().toLocaleTimeString() };
+    historialChats[numero].push(msgEntrante);
+
+    // Actualizar prospecto
     let prospecto = prospectos.find(p => p.telefono == numero || p.telefono.endsWith(numero));
-
     if (!prospecto) {
-        prospecto = { empresa: 'Cliente WhatsApp', telefono: numero, estado: 'Respondió', ultimoMensaje: msg.body };
+        prospecto = { empresa: 'Cliente WhatsApp', telefono: numero, estado: 'Respondió', ultimoMensaje: textoCliente };
         prospectos.push(prospecto);
     } else {
         prospecto.estado = 'Respondió';
-        prospecto.ultimoMensaje = msg.body;
+        prospecto.ultimoMensaje = textoCliente;
     }
     guardarBD();
 
+    // Notificar al Dashboard en tiempo real
+    io.emit('nuevo_mensaje', { telefono: numero, mensaje: msgEntrante, prospectos });
+
+    // Respuesta con IA
     try {
         const response = await ai.models.generateContent({
             model: 'gemini-2.5-flash',
-            contents: `Eres el asistente virtual comercial de Zenix, un software POS y de facturación electrónica. 
-            El cliente envió: "${msg.body}". 
-            Responde de forma concisa, cordial, vendedora y comercial animando a agendar una demostración gratuita.`
+            contents: `Eres el asistente virtual comercial de Zenix, software POS y facturación electrónica. El cliente dijo: "${textoCliente}". Responde conciso, comercial y amable para agendar una demo.`
         });
 
-        await client.sendMessage(msg.from, response.text);
+        const textoBot = response.text;
+        await client.sendMessage(msg.from, textoBot);
+
+        const msgBot = { emisor: 'bot', texto: textoBot, hora: new Date().toLocaleTimeString() };
+        historialChats[numero].push(msgBot);
+        guardarBD();
+
+        io.emit('nuevo_mensaje', { telefono: numero, mensaje: msgBot, prospectos });
     } catch (err) {
-        console.error('Error al responder con Gemini AI:', err);
-        try {
-            await client.sendMessage(msg.from, "¡Hola! Gracias por comunicarte con Zenix. En un momento un asesor comercial continuará con tu solicitud.");
-        } catch (e) {
-            console.error('Error al enviar mensaje de respaldo:', e);
-        }
+        console.error('Error Gemini AI:', err);
     }
 });
 
-// Rutas de la API para el Dashboard Admin
-app.get('/api/prospectos', (req, res) => {
-    res.json(prospectos);
+// Eventos de conexión WebSocket con la web
+io.on('connection', (socket) => {
+    socket.emit('estado', estadoSesion);
+    if (qrActual) socket.emit('qr', qrActual);
+    socket.emit('cargar_chats', { prospectos, historialChats });
+});
+
+// API Endpoints
+app.get('/api/prospectos', (req, res) => res.json(prospectos));
+app.get('/api/chats/:telefono', (req, res) => {
+    const chat = historialChats[req.params.telefono] || [];
+    res.json(chat);
 });
 
 app.post('/api/cargar-excel', upload.single('archivo'), (req, res) => {
     try {
         const workbook = xlsx.readFile(req.file.path);
-        const sheetName = workbook.SheetNames[0];
-        const rows = xlsx.utils.sheet_to_json(workbook.Sheets[sheetName]);
-
+        const rows = xlsx.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]]);
         rows.forEach(row => {
-            const empresa = row.Empresa || row.empresa || row.Nombre || 'Empresa';
-            let telefono = String(row.Telefono || row.telefono || row.Celular || '');
-            telefono = telefono.replace(/\D/g, '');
-
-            if (telefono && !prospectos.some(p => p.telefono === telefono)) {
-                prospectos.push({
-                    empresa,
-                    telefono,
-                    estado: 'Pendiente',
-                    ultimoMensaje: '-'
-                });
+            let tel = String(row.Telefono || row.telefono || row.Celular || '').replace(/\D/g, '');
+            if (tel && !prospectos.some(p => p.telefono === tel)) {
+                prospectos.push({ empresa: row.Empresa || row.Nombre || 'Empresa', telefono: tel, estado: 'Pendiente', ultimoMensaje: '-' });
             }
         });
-
         guardarBD();
         fs.unlinkSync(req.file.path);
-        res.json({ success: true, total: prospectos.length });
-    } catch (error) {
-        res.status(500).json({ error: 'Error al procesar el archivo Excel' });
+        io.emit('actualizar_lista', prospectos);
+        res.json({ success: true });
+    } catch (e) {
+        res.status(500).json({ error: 'Error procesando Excel' });
     }
 });
 
-// Webhook para integración con Calendly
-app.post('/webhook-calendly', (req, res) => {
-    const data = req.body;
-    if (data && data.payload && data.payload.invitee) {
-        const email = data.payload.invitee.email;
-        console.log(`📅 Nueva demo agendada en Calendly por: ${email}`);
-    }
-    res.sendStatus(200);
-});
-
-// Inicializar el puerto del servidor
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => {
-    console.log(`🚀 Dashboard Admin e Infraestructura corriendo en el puerto ${PORT}`);
+server.listen(PORT, () => {
+    console.log(`🚀 Servidor en puerto ${PORT}`);
     client.initialize();
 });

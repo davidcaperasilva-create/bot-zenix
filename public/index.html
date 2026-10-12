@@ -3,109 +3,153 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Zenix Bot - Dashboard Admin</title>
+    <title>Zenix Control Center</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script src="/socket.io/socket.io.js"></script>
 </head>
-<body class="bg-slate-900 text-white min-h-screen p-6">
-    <div class="max-w-7xl mx-auto">
+<body class="bg-slate-900 text-white min-h-screen font-sans">
+    <div class="container mx-auto p-6">
+        <!-- Header -->
         <header class="flex justify-between items-center mb-8 border-b border-slate-800 pb-4">
             <div>
                 <h1 class="text-3xl font-bold text-blue-400">Zenix Control Center</h1>
-                <p class="text-slate-400 text-sm">Panel de control de prospección y atención con IA</p>
+                <p class="text-slate-400 text-sm">Gestión de WhatsApp, IA y Chats en vivo</p>
             </div>
-            <label class="bg-blue-600 hover:bg-blue-500 px-4 py-2 rounded-lg font-semibold cursor-pointer text-sm">
-                📤 Cargar Excel
-                <input type="file" id="excelFile" accept=".xlsx" class="hidden" onchange="subirExcel()">
-            </label>
+            <div class="flex items-center gap-4">
+                <span id="badge-estado" class="px-3 py-1 text-xs font-semibold rounded-full bg-yellow-500/20 text-yellow-400 border border-yellow-500/30">Cargando...</span>
+            </div>
         </header>
 
-        <!-- Métricas -->
-        <div class="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
-            <div class="bg-slate-800 p-6 rounded-xl border border-slate-700">
-                <span class="text-slate-400 text-sm">Total Registros</span>
-                <div id="statTotal" class="text-3xl font-bold text-white mt-1">0</div>
-            </div>
-            <div class="bg-slate-800 p-6 rounded-xl border border-slate-700">
-                <span class="text-slate-400 text-sm">Mensajes Enviados</span>
-                <div id="statEnviados" class="text-3xl font-bold text-yellow-400 mt-1">0</div>
-            </div>
-            <div class="bg-slate-800 p-6 rounded-xl border border-slate-700">
-                <span class="text-slate-400 text-sm">Clientes Respondieron</span>
-                <div id="statRespondidos" class="text-3xl font-bold text-green-400 mt-1">0</div>
-            </div>
-            <div class="bg-slate-800 p-6 rounded-xl border border-slate-700">
-                <span class="text-slate-400 text-sm">Demos Agendadas</span>
-                <div id="statAgendados" class="text-3xl font-bold text-purple-400 mt-1">0</div>
-            </div>
-        </div>
+        <!-- Grid Principal -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            
+            <!-- Columna Izquierda: QR & Prospectos -->
+            <div class="space-y-6">
+                <!-- Tarjeta QR -->
+                <div class="bg-slate-800 border border-slate-700 rounded-xl p-5 text-center">
+                    <h2 class="text-lg font-bold text-slate-200 mb-3">Conexión de WhatsApp</h2>
+                    <div id="contenedor-qr" class="flex justify-center items-center min-h-[200px] bg-slate-900 rounded-lg p-3">
+                        <p class="text-slate-500 text-sm">Cargando estado...</p>
+                    </div>
+                </div>
 
-        <!-- Tabla -->
-        <div class="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
-            <div class="p-4 border-b border-slate-700 font-semibold text-slate-300">
-                Lista de Prospectos y Respuestas
+                <!-- Lista de Prospectos -->
+                <div class="bg-slate-800 border border-slate-700 rounded-xl p-5">
+                    <h2 class="text-lg font-bold text-slate-200 mb-3">Prospectos</h2>
+                    <div id="lista-prospectos" class="space-y-2 max-h-[400px] overflow-y-auto pr-2">
+                        <p class="text-slate-500 text-sm">No hay prospectos cargados.</p>
+                    </div>
+                </div>
             </div>
-            <div class="overflow-x-auto">
-                <table class="w-full text-left text-sm">
-                    <thead class="bg-slate-900/50 text-slate-400 uppercase text-xs">
-                        <tr>
-                            <th class="p-4">Empresa / Nombre</th>
-                            <th class="p-4">Teléfono</th>
-                            <th class="p-4">Estado</th>
-                            <th class="p-4">Último Mensaje</th>
-                        </tr>
-                    </thead>
-                    <tbody id="tablaProspectos" class="divide-y divide-slate-700">
-                        <!-- Filas dinámicas -->
-                    </tbody>
-                </table>
+
+            <!-- Columna Derecha: Visualizador de Chats en Vivo -->
+            <div class="lg:col-span-2 bg-slate-800 border border-slate-700 rounded-xl p-5 flex flex-col h-[650px]">
+                <div class="border-b border-slate-700 pb-3 mb-4">
+                    <h2 id="chat-titulo" class="text-lg font-bold text-blue-400">Selecciona un prospecto para ver el chat</h2>
+                    <p id="chat-subtitulo" class="text-xs text-slate-400">Monitoreo en tiempo real de la IA</p>
+                </div>
+
+                <!-- Ventana de mensajes -->
+                <div id="chat-mensajes" class="flex-1 overflow-y-auto space-y-3 p-3 bg-slate-900 rounded-lg border border-slate-700">
+                    <div class="text-center text-slate-500 text-sm my-auto">Haz clic en un contacto de la lista para inspeccionar la conversación.</div>
+                </div>
             </div>
+
         </div>
     </div>
 
     <script>
-        async function cargarStats() {
-            const res = await fetch('/api/stats');
-            const data = await res.json();
+        const socket = io();
+        let prospectoActivo = null;
+        let todosLosProspectos = [];
+        let historialCompleto = {};
 
-            document.getElementById('statTotal').innerText = data.total;
-            document.getElementById('statEnviados').innerText = data.enviados;
-            document.getElementById('statRespondidos').innerText = data.respondidos;
-            document.getElementById('statAgendados').innerText = data.agendados;
+        // Escuchar eventos de socket
+        socket.on('estado', (estado) => {
+            const badge = document.getElementById('badge-estado');
+            badge.innerText = estado;
+            if (estado === 'Conectado') {
+                badge.className = "px-3 py-1 text-xs font-semibold rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30";
+                document.getElementById('contenedor-qr').innerHTML = `<p class="text-emerald-400 font-medium">✅ WhatsApp Vinculado y Activo</p>`;
+            } else if (estado === 'Esperando escaneo') {
+                badge.className = "px-3 py-1 text-xs font-semibold rounded-full bg-amber-500/20 text-amber-400 border border-amber-500/30";
+            }
+        });
 
-            const tbody = document.getElementById('tablaProspectos');
-            tbody.innerHTML = '';
+        socket.on('qr', (urlQr) => {
+            document.getElementById('contenedor-qr').innerHTML = `
+                <div class="text-center">
+                    <img src="${urlQr}" class="w-48 h-48 mx-auto rounded border border-slate-600 mb-2">
+                    <p class="text-xs text-slate-400">Escanea este código desde WhatsApp > Dispositivos vinculados</p>
+                </div>`;
+        });
 
-            data.prospectos.reverse().forEach(p => {
-                let badgeColor = 'bg-slate-700 text-slate-300';
-                if(p.estado === 'Enviado') badgeColor = 'bg-yellow-500/20 text-yellow-400';
-                if(p.estado === 'Respondió') badgeColor = 'bg-green-500/20 text-green-400';
-                if(p.estado === 'Agendado') badgeColor = 'bg-purple-500/20 text-purple-400';
+        socket.on('qr_resuelto', () => {
+            document.getElementById('contenedor-qr').innerHTML = `<p class="text-emerald-400 font-medium">✅ WhatsApp Vinculado y Activo</p>`;
+        });
 
-                tbody.innerHTML += `
-                    <tr class="hover:bg-slate-700/50 transition">
-                        <td class="p-4 font-medium text-white">${p.nombre}</td>
-                        <td class="p-4 text-slate-400">${p.telefono}</td>
-                        <td class="p-4"><span class="px-2 py-1 rounded-full text-xs font-semibold ${badgeColor}">${p.estado}</span></td>
-                        <td class="p-4 text-slate-300 truncate max-w-xs">${p.ultimoMensaje || '-'}</td>
-                    </tr>
-                `;
-            });
+        socket.on('cargar_chats', (data) => {
+            todosLosProspectos = data.prospectos;
+            historialCompleto = data.historialChats;
+            renderProspectos();
+        });
+
+        socket.on('nuevo_mensaje', (data) => {
+            todosLosProspectos = data.prospectos;
+            if (!historialCompleto[data.telefono]) historialCompleto[data.telefono] = [];
+            historialCompleto[data.telefono].push(data.mensaje);
+            renderProspectos();
+
+            if (prospectoActivo === data.telefono) {
+                renderChat(data.telefono);
+            }
+        });
+
+        function renderProspectos() {
+            const cont = document.getElementById('lista-prospectos');
+            if (todosLosProspectos.length === 0) {
+                cont.innerHTML = '<p class="text-slate-500 text-sm">No hay prospectos.</p>';
+                return;
+            }
+
+            cont.innerHTML = todosLosProspectos.map(p => `
+                <div onclick="seleccionarChat('${p.telefono}', '${p.empresa}')" class="p-3 bg-slate-700/40 hover:bg-slate-700 border border-slate-600/50 rounded-lg cursor-pointer transition flex justify-between items-center ${prospectoActivo === p.telefono ? 'ring-2 ring-blue-500' : ''}">
+                    <div>
+                        <p class="font-semibold text-sm text-slate-200">${p.empresa}</p>
+                        <p class="text-xs text-slate-400">${p.telefono}</p>
+                    </div>
+                    <span class="text-[10px] px-2 py-0.5 rounded ${p.estado === 'Respondió' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-slate-600 text-slate-300'}">${p.estado}</span>
+                </div>
+            `).join('');
         }
 
-        async function subirExcel() {
-            const input = document.getElementById('excelFile');
-            if(!input.files[0]) return;
-
-            const formData = new FormData();
-            formData.append('archivo', input.files[0]);
-
-            await fetch('/api/upload-excel', { method: 'POST', body: formData });
-            alert('¡Archivo procesado con éxito!');
-            cargarStats();
+        function seleccionarChat(telefono, empresa) {
+            prospectoActivo = telefono;
+            document.getElementById('chat-titulo').innerText = `${empresa} (${telefono})`;
+            renderProspectos();
+            renderChat(telefono);
         }
 
-        setInterval(cargarStats, 5000);
-        cargarStats();
+        function renderChat(telefono) {
+            const cont = document.getElementById('chat-mensajes');
+            const mensajes = historialCompleto[telefono] || [];
+
+            if (mensajes.length === 0) {
+                cont.innerHTML = '<p class="text-center text-slate-500 text-sm my-auto">Sin mensajes en este chat.</p>';
+                return;
+            }
+
+            cont.innerHTML = mensajes.map(m => `
+                <div class="flex flex-col ${m.emisor === 'bot' ? 'items-end' : 'items-start'}">
+                    <div class="max-w-[75%] p-3 rounded-xl text-sm ${m.emisor === 'bot' ? 'bg-blue-600 text-white rounded-br-none' : 'bg-slate-700 text-slate-200 rounded-bl-none'}">
+                        <p>${m.texto}</p>
+                        <span class="text-[10px] opacity-60 block text-right mt-1">${m.hora}</span>
+                    </div>
+                </div>
+            `).join('');
+
+            cont.scrollTop = cont.scrollHeight;
+        }
     </script>
 </body>
 </html>
