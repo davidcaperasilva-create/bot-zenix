@@ -46,16 +46,12 @@ function guardarBD() {
     }
 }
 
-// Configuración optimizada de Puppeteer para evitar que WhatsApp Web se quede en "Sincronizando..."
+// UserAgent explícito de Windows 10 Chrome para evitar que WhatsApp aplique pausas de sincronización de macOS/iOS
 const client = new Client({
     authStrategy: new LocalAuth(),
     takeoverOnConflict: true,
     takeoverTimeoutMs: 0,
-    authTimeoutMs: 90000,
-    webVersionCache: {
-        type: 'remote',
-        remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html'
-    },
+    authTimeoutMs: 120000,
     puppeteer: {
         headless: true,
         args: [
@@ -70,7 +66,7 @@ const client = new Client({
             '--disable-background-timer-throttling',
             '--disable-backgrounding-occluded-windows',
             '--disable-renderer-backgrounding',
-            '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+            '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36'
         ]
     }
 });
@@ -78,20 +74,20 @@ const client = new Client({
 let qrActual = null;
 let estadoSesion = 'Desconectado';
 
-// Ping Keep-Alive cada 45 segundos para mantener activo Puppeteer
+// Mantiene el WebSocket vivo enviando estado cada 30 segundos
 setInterval(async () => {
     if (client && client.info && client.info.wid) {
         try {
             const state = await client.getState();
-            console.log(`📡 Ping Keep-Alive WhatsApp: Estado [${state}]`);
+            console.log(`📡 Keep-Alive WhatsApp: Estado [${state}]`);
         } catch (e) {
-            console.error('⚠️ Fallo en Keep-Alive WhatsApp:', e.message || e);
+            console.error('⚠️ Keep-Alive:', e.message || e);
         }
     }
-}, 45000);
+}, 30000);
 
 client.on('qr', async (qr) => {
-    console.log('🔄 Código QR generado para escaneo.');
+    console.log('🔄 Código QR generado.');
     estadoSesion = 'Esperando escaneo';
     try {
         qrActual = await QRCode.toDataURL(qr);
@@ -103,7 +99,7 @@ client.on('qr', async (qr) => {
 });
 
 client.on('authenticated', () => {
-    console.log('🔑 Sesión autenticada correctamente.');
+    console.log('🔑 Sesión autenticada.');
     estadoSesion = 'Conectado';
     qrActual = null;
     io.emit('estado', estadoSesion);
@@ -119,14 +115,14 @@ client.on('ready', () => {
 });
 
 client.on('auth_failure', (msg) => {
-    console.error('❌ Falla de autenticación en WhatsApp:', msg);
+    console.error('❌ Falla de autenticación:', msg);
     estadoSesion = 'Desconectado';
     qrActual = null;
     io.emit('estado', estadoSesion);
 });
 
 client.on('disconnected', (reason) => {
-    console.log('⚠️ Sesión desconectada de WhatsApp:', reason);
+    console.log('⚠️ Sesión desconectada:', reason);
     estadoSesion = 'Desconectado';
     qrActual = null;
     io.emit('estado', estadoSesion);
@@ -186,7 +182,7 @@ client.on('message', async (msg) => {
 async function iniciarProspeccionMasiva() {
     if (prospectandoEnProgreso) return;
     if (!client.info || !client.info.wid) {
-        console.log('⏳ No hay dispositivo vinculado real activo en WhatsApp.');
+        console.log('⏳ No hay dispositivo vinculado real activo.');
         return;
     }
 
@@ -213,7 +209,7 @@ async function iniciarProspeccionMasiva() {
                 try {
                     const chat = await client.getChatById(chatId);
                     await chat.sendStateTyping();
-                    await new Promise(r => setTimeout(r, 2500));
+                    await new Promise(r => setTimeout(r, 2000));
                 } catch (errTyping) {}
 
                 await client.sendMessage(chatId, mensajeInicial);
@@ -276,7 +272,7 @@ app.get('/api/metricas', (req, res) => res.json(calcularMetricas()));
 
 app.post('/api/reset-sesion', async (req, res) => {
     try {
-        console.log('🔄 Reseteando cliente de WhatsApp...');
+        console.log('🔄 Reseteando sesión...');
         estadoSesion = 'Desconectado';
         qrActual = null;
         io.emit('estado', estadoSesion);
@@ -288,9 +284,9 @@ app.post('/api/reset-sesion', async (req, res) => {
         await client.destroy();
         client.initialize();
 
-        res.json({ success: true, message: 'Sesión reiniciada. Se generará un nuevo QR.' });
+        res.json({ success: true, message: 'Sesión reiniciada.' });
     } catch (e) {
-        console.error('Error reseteando sesión:', e);
+        console.error('Error reseteando:', e);
         res.status(500).json({ error: 'Error reseteando sesión' });
     }
 });
