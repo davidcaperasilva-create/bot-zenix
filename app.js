@@ -17,15 +17,14 @@ app.use(express.static('public'));
 
 const upload = multer({ dest: 'uploads/' });
 
-// Inicializar cliente Gemini con la API Key
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
-// Persistencia de datos en archivos JSON locales
 const DB_FILE = './db_prospectos.json';
 const CHATS_FILE = './db_chats.json';
 
 let prospectos = fs.existsSync(DB_FILE) ? JSON.parse(fs.readFileSync(DB_FILE, 'utf8')) : [];
 let historialChats = fs.existsSync(CHATS_FILE) ? JSON.parse(fs.readFileSync(CHATS_FILE, 'utf8')) : {};
+let prospectandoEnProgreso = false;
 
 function guardarBD() {
     try {
@@ -36,7 +35,6 @@ function guardarBD() {
     }
 }
 
-// Configuración de Puppeteer optimizada para servidores Linux
 const client = new Client({
     authStrategy: new LocalAuth(),
     puppeteer: {
@@ -57,7 +55,6 @@ const client = new Client({
 let qrActual = null;
 let estadoSesion = 'Desconectado';
 
-// Eventos de sesión de WhatsApp
 client.on('qr', async (qr) => {
     console.log('🔄 Nuevo código QR generado.');
     estadoSesion = 'Esperando escaneo';
@@ -66,12 +63,11 @@ client.on('qr', async (qr) => {
         io.emit('qr', qrActual);
         io.emit('estado', estadoSesion);
     } catch (e) {
-        console.error('Error generando DataURL del QR:', e);
+        console.error('Error generando QR:', e);
     }
 });
 
 client.on('authenticated', () => {
-    console.log('🔑 Sesión de WhatsApp autenticada correctamente.');
     estadoSesion = 'Conectado';
     qrActual = null;
     io.emit('estado', estadoSesion);
@@ -86,26 +82,21 @@ client.on('ready', () => {
     io.emit('qr_resuelto');
 });
 
-client.on('disconnected', (reason) => {
-    console.log('⚠️ Cliente desconectado:', reason);
+client.on('disconnected', () => {
     estadoSesion = 'Desconectado';
-    qrActual = null;
     io.emit('estado', estadoSesion);
 });
 
-// Evento al recibir mensajes
 client.on('message', async (msg) => {
     if (msg.from.endsWith('@g.us') || msg.from.endsWith('@newsletter')) return;
 
     const numero = msg.from.replace('@c.us', '');
     const textoCliente = msg.body;
 
-    // Registrar mensaje del cliente
     if (!historialChats[numero]) historialChats[numero] = [];
     const msgEntrante = { emisor: 'cliente', texto: textoCliente, hora: new Date().toLocaleTimeString() };
     historialChats[numero].push(msgEntrante);
 
-    // Actualizar o crear registro de prospecto
     let prospecto = prospectos.find(p => p.telefono == numero || p.telefono.endsWith(numero));
     if (!prospecto) {
         prospecto = { empresa: 'Cliente WhatsApp', telefono: numero, estado: 'Respondió', ultimoMensaje: textoCliente };
@@ -116,10 +107,8 @@ client.on('message', async (msg) => {
     }
     guardarBD();
 
-    // Notificar al Dashboard en tiempo real
     io.emit('nuevo_mensaje', { telefono: numero, mensaje: msgEntrante, prospectos });
 
-    // Respuesta comercial automatizada con Gemini AI
     try {
         const response = await ai.models.generateContent({
             model: 'gemini-2.5-flash',
@@ -139,41 +128,68 @@ client.on('message', async (msg) => {
     }
 });
 
-// Conexión inicial de la página web vía WebSockets
+async function iniciarProspeccionMasiva() {
+    if (prospectandoEnProgreso || estadoSesion !== 'Conectado') return;
+    prospectandoEnProgreso = true;
+
+    for (let p of prospectos) {
+        if (p.estado === 'Pendiente') {
+            try {
+                let telLimpio = p.telefono.replace(/\D/g, '');
+                if (!telLimpio.startsWith('57') && telLimpio.length === 10) {
+                    telLimpio = '57' + telLimpio;
+                }
+                const chatId = telLimpio + '@c.us';
+
+                const mensajeInicial = `¡Hola! 👋 Me comunico de Zenix POS y Facturación Electrónica. Vemos que administras ${p.empresa}. ¿Te gustaría probar gratis durante 14 días nuestro sistema POS e impulsar tus ventas?`;
+
+                await client.sendMessage(chatId, mensajeInicial);
+
+                p.estado = 'Contactado';
+                p.ultimoMensaje = mensajeInicial;
+
+                if (!historialChats[p.telefono]) historialChats[p.telefono] = [];
+                historialChats[p.telefono].push({ emisor: 'bot', texto: mensajeInicial, hora: new Date().toLocaleTimeString() });
+
+                guardarBD();
+                io.emit('actualizar_lista', prospectos);
+
+                await new Promise(resolve => setTimeout(resolve, 12000));
+            } catch (e) {
+                console.error(`Error enviando a ${p.telefono}:`, e);
+                p.estado = 'Error';
+                guardarBD();
+            }
+        }
+    }
+    prospectandoEnProgreso = false;
+}
+
 io.on('connection', (socket) => {
-    // Verificar si el cliente de WhatsApp ya tiene la sesión cargada
-    if (client.info && client.info.wid) {
-        estadoSesion = 'Conectado';
-    }
-
+    if (client.info && client.info.wid) estadoSesion = 'Conectado';
     socket.emit('estado', estadoSesion);
-
-    if (estadoSesion === 'Conectado') {
-        socket.emit('qr_resuelto');
-    } else if (qrActual) {
-        socket.emit('qr', qrActual);
-    }
-
+    if (estadoSesion === 'Conectado') socket.emit('qr_resuelto');
+    else if (qrActual) socket.emit('qr', qrActual);
     socket.emit('cargar_chats', { prospectos, historialChats });
 });
 
-// Rutas de API REST
 app.get('/api/prospectos', (req, res) => res.json(prospectos));
-app.get('/api/chats/:telefono', (req, res) => {
-    const chat = historialChats[req.params.telefono] || [];
-    res.json(chat);
+
+app.post('/api/iniciar-prospeccion', (req, res) => {
+    iniciarProspeccionMasiva();
+    res.json({ success: true, message: 'Prospección iniciada' });
 });
 
-// Carga de Excel
 app.post('/api/cargar-excel', upload.single('archivo'), (req, res) => {
     try {
         const workbook = xlsx.readFile(req.file.path);
         const rows = xlsx.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]]);
         rows.forEach(row => {
-            let tel = String(row.Telefono || row.telefono || row.Celular || '').replace(/\D/g, '');
+            let tel = String(row.Telefono || row.telefono || row.Celular || row.celular || '').replace(/\D/g, '');
+            let emp = row.Empresa || row.empresa || row.Nombre || row.nombre || 'Empresa';
             if (tel && !prospectos.some(p => p.telefono === tel)) {
                 prospectos.push({ 
-                    empresa: row.Empresa || row.empresa || row.Nombre || 'Empresa', 
+                    empresa: emp, 
                     telefono: tel, 
                     estado: 'Pendiente', 
                     ultimoMensaje: '-' 
@@ -183,24 +199,17 @@ app.post('/api/cargar-excel', upload.single('archivo'), (req, res) => {
         guardarBD();
         fs.unlinkSync(req.file.path);
         io.emit('actualizar_lista', prospectos);
+        
+        iniciarProspeccionMasiva();
+        
         res.json({ success: true, total: prospectos.length });
     } catch (e) {
         res.status(500).json({ error: 'Error al procesar el archivo Excel' });
     }
 });
 
-// Webhook para Calendly
-app.post('/webhook-calendly', (req, res) => {
-    const data = req.body;
-    if (data && data.payload && data.payload.invitee) {
-        console.log(`📅 Nueva demo agendada por: ${data.payload.invitee.email}`);
-    }
-    res.sendStatus(200);
-});
-
-// Iniciar servidor web y bot
 const PORT = process.env.PORT || 10000;
 server.listen(PORT, () => {
-    console.log(`🚀 Servidor e Infraestructura activos en el puerto ${PORT}`);
+    console.log(`🚀 Servidor activo en puerto ${PORT}`);
     client.initialize();
 });
