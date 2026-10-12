@@ -3,19 +3,22 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Zenix Control Center</title>
+    <title>Zenix Control Center - Fase 1</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="/socket.io/socket.io.js"></script>
 </head>
 <body class="bg-slate-900 text-white min-h-screen font-sans">
     <div class="container mx-auto p-6">
-        <!-- Header con Botón de Carga de Excel -->
+        <!-- Header -->
         <header class="flex justify-between items-center mb-6 border-b border-slate-800 pb-4">
             <div>
                 <h1 class="text-3xl font-bold text-blue-400">Zenix Control Center</h1>
-                <p class="text-slate-400 text-sm">Gestión de WhatsApp, IA y Prospectos en vivo</p>
+                <p class="text-slate-400 text-sm">Gestión de WhatsApp, IA Copilot y Plantillas Dinámicas</p>
             </div>
-            <div class="flex items-center gap-4">
+            <div class="flex items-center gap-3">
+                <button onclick="abrirModalConfig()" class="bg-slate-700 hover:bg-slate-600 text-slate-200 font-semibold px-4 py-2 rounded-lg text-sm transition shadow flex items-center gap-2">
+                    ⚙️ Configurar Prompt / Plantilla
+                </button>
                 <input type="file" id="input-excel" accept=".xlsx, .xls" class="hidden" onchange="subirExcel(event)">
                 <button onclick="document.getElementById('input-excel').click()" class="bg-blue-600 hover:bg-blue-500 text-white font-semibold px-4 py-2 rounded-lg text-sm transition shadow flex items-center gap-2">
                     📁 Cargar Excel
@@ -32,7 +35,7 @@
                 <!-- Tarjeta QR -->
                 <div class="bg-slate-800 border border-slate-700 rounded-xl p-5 text-center">
                     <h2 class="text-lg font-bold text-slate-200 mb-3">Conexión de WhatsApp</h2>
-                    <div id="contenedor-qr" class="flex justify-center items-center min-h-[160px] bg-slate-900 rounded-lg p-3">
+                    <div id="contenedor-qr" class="flex justify-center items-center min-h-[140px] bg-slate-900 rounded-lg p-3">
                         <p class="text-emerald-400 font-medium">✅ WhatsApp Vinculado y Activo</p>
                     </div>
                 </div>
@@ -46,19 +49,58 @@
                 </div>
             </div>
 
-            <!-- Columna Derecha: Visualizador de Chat en Vivo -->
-            <div class="lg:col-span-2 bg-slate-800 border border-slate-700 rounded-xl p-5 flex flex-col h-[600px]">
-                <div class="border-b border-slate-700 pb-3 mb-4">
-                    <h2 id="chat-titulo" class="text-lg font-bold text-blue-400">Selecciona un prospecto para ver el chat</h2>
-                    <p id="chat-subtitulo" class="text-xs text-slate-400">Monitoreo en tiempo real del bot de IA</p>
+            <!-- Columna Derecha: Visualizador de Chat en Vivo y Modo Copiloto -->
+            <div class="lg:col-span-2 bg-slate-800 border border-slate-700 rounded-xl p-5 flex flex-col h-[620px]">
+                <div class="border-b border-slate-700 pb-3 mb-4 flex justify-between items-center">
+                    <div>
+                        <h2 id="chat-titulo" class="text-lg font-bold text-blue-400">Selecciona un prospecto para ver el chat</h2>
+                        <p id="chat-subtitulo" class="text-xs text-slate-400">Monitoreo en tiempo real</p>
+                    </div>
+                    <!-- Interruptor Modo Copiloto -->
+                    <div id="panel-copiloto" class="hidden flex items-center gap-3 bg-slate-900 px-3 py-1.5 rounded-lg border border-slate-700">
+                        <span class="text-xs text-slate-300 font-medium">Modo IA:</span>
+                        <button id="btn-toggle-ia" onclick="toggleIA()" class="text-xs font-semibold px-3 py-1 rounded transition bg-emerald-600 text-white">
+                            🤖 IA Activa
+                        </button>
+                    </div>
                 </div>
 
                 <!-- Ventana de Mensajes -->
-                <div id="chat-mensajes" class="flex-1 overflow-y-auto space-y-3 p-3 bg-slate-900 rounded-lg border border-slate-700">
-                    <div class="text-center text-slate-500 text-sm my-auto">Haz clic en un contacto de la lista izquierda para inspeccionar la conversación.</div>
+                <div id="chat-mensajes" class="flex-1 overflow-y-auto space-y-3 p-3 bg-slate-900 rounded-lg border border-slate-700 mb-3">
+                    <div class="text-center text-slate-500 text-sm my-auto">Haz clic en un contacto de la lista para ver la conversación.</div>
+                </div>
+
+                <!-- Input para respuesta manual de Asesor -->
+                <div id="panel-envio-manual" class="hidden flex gap-2">
+                    <input type="text" id="input-mensaje-manual" placeholder="Escribe un mensaje manual como Asesor..." class="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-4 py-2 text-sm text-white focus:outline-none focus:border-blue-500" onkeypress="if(event.key==='Enter') enviarMensajeManual()">
+                    <button onclick="enviarMensajeManual()" class="bg-blue-600 hover:bg-blue-500 text-white font-semibold px-4 py-2 rounded-lg text-sm transition">
+                        Enviar
+                    </button>
                 </div>
             </div>
 
+        </div>
+    </div>
+
+    <!-- Modal Configuración de Prompt / Plantilla -->
+    <div id="modal-config" class="fixed inset-0 bg-black/70 backdrop-blur-sm flex justify-center items-center hidden z-50">
+        <div class="bg-slate-800 border border-slate-700 rounded-xl p-6 w-full max-w-2xl shadow-2xl space-y-4">
+            <h2 class="text-xl font-bold text-blue-400">Configuración de IA y Plantilla de Prospección</h2>
+            
+            <div>
+                <label class="block text-xs text-slate-400 font-semibold mb-1">System Prompt de Gemini AI (Instrucciones comerciales)</label>
+                <textarea id="cfg-prompt" rows="4" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-3 text-sm text-slate-200 focus:outline-none focus:border-blue-500"></textarea>
+            </div>
+
+            <div>
+                <label class="block text-xs text-slate-400 font-semibold mb-1">Plantilla de Mensaje Inicial (Variables: <code class="text-blue-400">{Nombre}</code>, <code class="text-blue-400">{Empresa}</code>)</label>
+                <textarea id="cfg-plantilla" rows="3" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-3 text-sm text-slate-200 focus:outline-none focus:border-blue-500"></textarea>
+            </div>
+
+            <div class="flex justify-end gap-3 pt-2">
+                <button onclick="cerrarModalConfig()" class="px-4 py-2 bg-slate-700 text-slate-300 text-sm font-semibold rounded-lg hover:bg-slate-600 transition">Cancelar</button>
+                <button onclick="guardarConfig()" class="px-4 py-2 bg-blue-600 text-white text-sm font-semibold rounded-lg hover:bg-blue-500 transition">Guardar Cambios</button>
+            </div>
         </div>
     </div>
 
@@ -67,6 +109,7 @@
         let prospectoActivo = null;
         let todosLosProspectos = [];
         let historialCompleto = {};
+        let configActual = {};
 
         socket.on('estado', (estado) => {
             const badge = document.getElementById('badge-estado');
@@ -82,7 +125,7 @@
         socket.on('qr', (urlQr) => {
             document.getElementById('contenedor-qr').innerHTML = `
                 <div class="text-center">
-                    <img src="${urlQr}" class="w-40 h-40 mx-auto rounded border border-slate-600 mb-2">
+                    <img src="${urlQr}" class="w-36 h-36 mx-auto rounded border border-slate-600 mb-2">
                     <p class="text-xs text-slate-400">Escanea este código desde WhatsApp</p>
                 </div>`;
         });
@@ -94,6 +137,7 @@
         socket.on('cargar_chats', (data) => {
             todosLosProspectos = data.prospectos;
             historialCompleto = data.historialChats;
+            if (data.config) configActual = data.config;
             renderProspectos();
         });
 
@@ -111,6 +155,7 @@
         socket.on('actualizar_lista', (prospectos) => {
             todosLosProspectos = prospectos;
             renderProspectos();
+            if (prospectoActivo) actualizarEstadoCopiloto();
         });
 
         function renderProspectos() {
@@ -126,7 +171,10 @@
                         <p class="font-semibold text-sm text-slate-200">${p.empresa}</p>
                         <p class="text-xs text-slate-400">${p.telefono}</p>
                     </div>
-                    <span class="text-[10px] px-2 py-0.5 rounded ${p.estado === 'Respondió' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-slate-600 text-slate-300'}">${p.estado}</span>
+                    <div class="flex flex-col items-end gap-1">
+                        <span class="text-[10px] px-2 py-0.5 rounded ${p.estado === 'Respondió' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-slate-600 text-slate-300'}">${p.estado}</span>
+                        ${p.iaActiva === false ? '<span class="text-[9px] text-amber-400 bg-amber-500/10 px-1 rounded">Asesor</span>' : ''}
+                    </div>
                 </div>
             `).join('');
         }
@@ -134,8 +182,41 @@
         function seleccionarChat(telefono, empresa) {
             prospectoActivo = telefono;
             document.getElementById('chat-titulo').innerText = `${empresa} (${telefono})`;
+            document.getElementById('panel-copiloto').classList.remove('hidden');
+            document.getElementById('panel-envio-manual').classList.remove('hidden');
             renderProspectos();
             renderChat(telefono);
+            actualizarEstadoCopiloto();
+        }
+
+        function actualizarEstadoCopiloto() {
+            const p = todosLosProspectos.find(x => x.telefono === prospectoActivo);
+            const btn = document.getElementById('btn-toggle-ia');
+            if (p && p.iaActiva === false) {
+                btn.innerText = '👤 Asesor Humano';
+                btn.className = 'text-xs font-semibold px-3 py-1 rounded transition bg-amber-600 text-white';
+            } else {
+                btn.innerText = '🤖 IA Activa';
+                btn.className = 'text-xs font-semibold px-3 py-1 rounded transition bg-emerald-600 text-white';
+            }
+        }
+
+        async function toggleIA() {
+            if (!prospectoActivo) return;
+            const p = todosLosProspectos.find(x => x.telefono === prospectoActivo);
+            const nuevoEstado = p ? !p.iaActiva : false;
+
+            const res = await fetch('/api/toggle-ia', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ telefono: prospectoActivo, iaActiva: nuevoEstado })
+            });
+            const data = await res.json();
+            if (data.success) {
+                if (p) p.iaActiva = data.iaActiva;
+                actualizarEstadoCopiloto();
+                renderProspectos();
+            }
         }
 
         function renderChat(telefono) {
@@ -148,15 +229,28 @@
             }
 
             cont.innerHTML = mensajes.map(m => `
-                <div class="flex flex-col ${m.emisor === 'bot' ? 'items-end' : 'items-start'}">
-                    <div class="max-w-[75%] p-3 rounded-xl text-sm ${m.emisor === 'bot' ? 'bg-blue-600 text-white rounded-br-none' : 'bg-slate-700 text-slate-200 rounded-bl-none'}">
+                <div class="flex flex-col ${m.emisor === 'bot' || m.emisor === 'asesor' ? 'items-end' : 'items-start'}">
+                    <div class="max-w-[75%] p-3 rounded-xl text-sm ${m.emisor === 'bot' ? 'bg-blue-600 text-white rounded-br-none' : (m.emisor === 'asesor' ? 'bg-indigo-600 text-white rounded-br-none' : 'bg-slate-700 text-slate-200 rounded-bl-none')}">
                         <p>${m.texto}</p>
-                        <span class="text-[10px] opacity-60 block text-right mt-1">${m.hora}</span>
+                        <span class="text-[10px] opacity-60 block text-right mt-1">${m.hora} ${m.emisor === 'asesor' ? '(Asesor)' : ''}</span>
                     </div>
                 </div>
             `).join('');
 
             cont.scrollTop = cont.scrollHeight;
+        }
+
+        async function enviarMensajeManual() {
+            const input = document.getElementById('input-mensaje-manual');
+            const texto = input.value.trim();
+            if (!texto || !prospectoActivo) return;
+
+            input.value = '';
+            await fetch('/api/enviar-manual', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ telefono: prospectoActivo, texto })
+            });
         }
 
         async function subirExcel(e) {
@@ -173,12 +267,39 @@
                 });
                 const data = await res.json();
                 if (data.success) {
-                    alert('✅ Base de datos cargada correctamente.');
+                    alert(`✅ Base cargada: ${data.agregados} prospectos agregados.`);
                 } else {
-                    alert('❌ Error al procesar la lista.');
+                    alert('❌ Error al procesar el archivo Excel.');
                 }
             } catch (err) {
                 alert('❌ Error al subir el archivo Excel.');
+            }
+        }
+
+        function abrirModalConfig() {
+            document.getElementById('cfg-prompt').value = configActual.systemPrompt || '';
+            document.getElementById('cfg-plantilla').value = configActual.mensajePlantilla || '';
+            document.getElementById('modal-config').classList.remove('hidden');
+        }
+
+        function cerrarModalConfig() {
+            document.getElementById('modal-config').classList.add('hidden');
+        }
+
+        async function guardarConfig() {
+            const systemPrompt = document.getElementById('cfg-prompt').value.trim();
+            const mensajePlantilla = document.getElementById('cfg-plantilla').value.trim();
+
+            const res = await fetch('/api/config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ systemPrompt, mensajePlantilla })
+            });
+            const data = await res.json();
+            if (data.success) {
+                configActual = data.config;
+                alert('✅ Configuración de Prompt y Plantilla guardada correctamente.');
+                cerrarModalConfig();
             }
         }
     </script>

@@ -21,15 +21,22 @@ const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 const DB_FILE = './db_prospectos.json';
 const CHATS_FILE = './db_chats.json';
+const CONFIG_FILE = './db_config.json';
 
 let prospectos = fs.existsSync(DB_FILE) ? JSON.parse(fs.readFileSync(DB_FILE, 'utf8')) : [];
 let historialChats = fs.existsSync(CHATS_FILE) ? JSON.parse(fs.readFileSync(CHATS_FILE, 'utf8')) : {};
+let config = fs.existsSync(CONFIG_FILE) ? JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')) : {
+    systemPrompt: 'Eres el asistente virtual comercial de Zenix, software POS y facturación electrónica. Responde conciso, comercial y amable para agendar una demo.',
+    mensajePlantilla: '¡Hola {Nombre}! 👋 Me comunico de Zenix POS y Facturación Electrónica. Vemos que administras {Empresa}. ¿Te gustaría probar gratis durante 14 días nuestro sistema POS e impulsar tus ventas?'
+};
+
 let prospectandoEnProgreso = false;
 
 function guardarBD() {
     try {
         fs.writeFileSync(DB_FILE, JSON.stringify(prospectos, null, 2));
         fs.writeFileSync(CHATS_FILE, JSON.stringify(historialChats, null, 2));
+        fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
     } catch (e) {
         console.error('Error al guardar datos locales:', e);
     }
@@ -99,32 +106,37 @@ client.on('message', async (msg) => {
 
     let prospecto = prospectos.find(p => p.telefono == numero || p.telefono.endsWith(numero));
     if (!prospecto) {
-        prospecto = { empresa: 'Cliente WhatsApp', telefono: numero, estado: 'Respondió', ultimoMensaje: textoCliente };
+        prospecto = { empresa: 'Cliente WhatsApp', telefono: numero, estado: 'Respondió', ultimoMensaje: textoCliente, iaActiva: true };
         prospectos.push(prospecto);
     } else {
         prospecto.estado = 'Respondió';
         prospecto.ultimoMensaje = textoCliente;
+        if (prospecto.iaActiva === undefined) prospecto.iaActiva = true;
     }
     guardarBD();
 
     io.emit('nuevo_mensaje', { telefono: numero, mensaje: msgEntrante, prospectos });
 
-    try {
-        const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
-            contents: `Eres el asistente virtual comercial de Zenix, software POS y facturación electrónica. El cliente dijo: "${textoCliente}". Responde conciso, comercial y amable para agendar una demo.`
-        });
+    // Verificar si el Modo Copiloto está activo para este prospecto
+    if (prospecto.iaActiva !== false) {
+        try {
+            const promptCompleto = `${config.systemPrompt}\n\nEl cliente dijo: "${textoCliente}".`;
+            const response = await ai.models.generateContent({
+                model: 'gemini-2.5-flash',
+                contents: promptCompleto
+            });
 
-        const textoBot = response.text;
-        await client.sendMessage(msg.from, textoBot);
+            const textoBot = response.text;
+            await client.sendMessage(msg.from, textoBot);
 
-        const msgBot = { emisor: 'bot', texto: textoBot, hora: new Date().toLocaleTimeString() };
-        historialChats[numero].push(msgBot);
-        guardarBD();
+            const msgBot = { emisor: 'bot', texto: textoBot, hora: new Date().toLocaleTimeString() };
+            historialChats[numero].push(msgBot);
+            guardarBD();
 
-        io.emit('nuevo_mensaje', { telefono: numero, mensaje: msgBot, prospectos });
-    } catch (err) {
-        console.error('Error al responder con Gemini AI:', err);
+            io.emit('nuevo_mensaje', { telefono: numero, mensaje: msgBot, prospectos });
+        } catch (err) {
+            console.error('Error al responder con Gemini AI:', err);
+        }
     }
 });
 
@@ -141,12 +153,16 @@ async function iniciarProspeccionMasiva() {
                 }
                 const chatId = telLimpio + '@c.us';
 
-                const mensajeInicial = `¡Hola! 👋 Me comunico de Zenix POS y Facturación Electrónica. Vemos que administras ${p.empresa}. ¿Te gustaría probar gratis durante 14 días nuestro sistema POS e impulsar tus ventas?`;
+                // Reemplazo de variables dinámicas {Nombre} y {Empresa}
+                let mensajeInicial = config.mensajePlantilla || '¡Hola {Nombre}! Conoce Zenix POS.';
+                mensajeInicial = mensajeInicial.replace(/\{Nombre\}/g, p.empresa || 'Cliente');
+                mensajeInicial = mensajeInicial.replace(/\{Empresa\}/g, p.empresa || 'su negocio');
 
                 await client.sendMessage(chatId, mensajeInicial);
 
                 p.estado = 'Contactado';
                 p.ultimoMensaje = mensajeInicial;
+                if (p.iaActiva === undefined) p.iaActiva = true;
 
                 if (!historialChats[p.telefono]) historialChats[p.telefono] = [];
                 historialChats[p.telefono].push({ emisor: 'bot', texto: mensajeInicial, hora: new Date().toLocaleTimeString() });
@@ -170,14 +186,56 @@ io.on('connection', (socket) => {
     socket.emit('estado', estadoSesion);
     if (estadoSesion === 'Conectado') socket.emit('qr_resuelto');
     else if (qrActual) socket.emit('qr', qrActual);
-    socket.emit('cargar_chats', { prospectos, historialChats });
+    socket.emit('cargar_chats', { prospectos, historialChats, config });
 });
 
 app.get('/api/prospectos', (req, res) => res.json(prospectos));
+app.get('/api/config', (req, res) => res.json(config));
 
-app.post('/api/iniciar-prospeccion', (req, res) => {
-    iniciarProspeccionMasiva();
-    res.json({ success: true, message: 'Prospección iniciada' });
+app.post('/api/config', (req, res) => {
+    const { systemPrompt, mensajePlantilla } = req.body;
+    if (systemPrompt) config.systemPrompt = systemPrompt;
+    if (mensajePlantilla) config.mensajePlantilla = mensajePlantilla;
+    guardarBD();
+    io.emit('config_actualizada', config);
+    res.json({ success: true, config });
+});
+
+app.post('/api/toggle-ia', (req, res) => {
+    const { telefono, iaActiva } = req.body;
+    let prospecto = prospectos.find(p => p.telefono == telefono || p.telefono.endsWith(telefono));
+    if (prospecto) {
+        prospecto.iaActiva = iaActiva;
+        guardarBD();
+        io.emit('actualizar_lista', prospectos);
+        res.json({ success: true, iaActiva: prospecto.iaActiva });
+    } else {
+        res.status(404).json({ error: 'Prospecto no encontrado' });
+    }
+});
+
+app.post('/api/enviar-manual', async (req, res) => {
+    const { telefono, texto } = req.body;
+    try {
+        let telLimpio = String(telefono).replace(/\D/g, '');
+        if (!telLimpio.startsWith('57') && telLimpio.length === 10) telLimpio = '57' + telLimpio;
+        const chatId = telLimpio + '@c.us';
+
+        await client.sendMessage(chatId, texto);
+
+        const msgManual = { emisor: 'asesor', texto, hora: new Date().toLocaleTimeString() };
+        if (!historialChats[telefono]) historialChats[telefono] = [];
+        historialChats[telefono].push(msgManual);
+
+        let prospecto = prospectos.find(p => p.telefono == telefono || p.telefono.endsWith(telefono));
+        if (prospecto) prospecto.ultimoMensaje = texto;
+
+        guardarBD();
+        io.emit('nuevo_mensaje', { telefono, mensaje: msgManual, prospectos });
+        res.json({ success: true });
+    } catch (e) {
+        res.status(500).json({ error: 'Error enviando mensaje manual' });
+    }
 });
 
 app.post('/api/cargar-excel', upload.single('archivo'), (req, res) => {
@@ -188,11 +246,8 @@ app.post('/api/cargar-excel', upload.single('archivo'), (req, res) => {
         
         let agregados = 0;
         rows.forEach(row => {
-            // Check all common field names for Phone/Contact
             let telRaw = row.Contacto || row.contacto || row.Telefono || row.telefono || row.Celular || row.celular || row.Phone || row.phone || '';
             let tel = String(telRaw).replace(/\D/g, '');
-
-            // Check all common field names for Name/Company
             let emp = row.Nombre || row.nombre || row.Empresa || row.empresa || row.Cliente || row.cliente || 'Empresa';
 
             if (tel && !prospectos.some(p => p.telefono === tel)) {
@@ -200,7 +255,8 @@ app.post('/api/cargar-excel', upload.single('archivo'), (req, res) => {
                     empresa: emp, 
                     telefono: tel, 
                     estado: 'Pendiente', 
-                    ultimoMensaje: '-' 
+                    ultimoMensaje: '-',
+                    iaActiva: true
                 });
                 agregados++;
             }
@@ -210,7 +266,6 @@ app.post('/api/cargar-excel', upload.single('archivo'), (req, res) => {
         fs.unlinkSync(req.file.path);
         
         io.emit('actualizar_lista', prospectos);
-        
         iniciarProspeccionMasiva();
         
         res.json({ success: true, agregados, total: prospectos.length });
