@@ -46,10 +46,16 @@ function guardarBD() {
     }
 }
 
+// Configuración optimizada de Puppeteer para evitar que WhatsApp Web se quede en "Sincronizando..."
 const client = new Client({
     authStrategy: new LocalAuth(),
     takeoverOnConflict: true,
     takeoverTimeoutMs: 0,
+    authTimeoutMs: 90000,
+    webVersionCache: {
+        type: 'remote',
+        remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html'
+    },
     puppeteer: {
         headless: true,
         args: [
@@ -63,7 +69,8 @@ const client = new Client({
             '--disable-gpu',
             '--disable-background-timer-throttling',
             '--disable-backgrounding-occluded-windows',
-            '--disable-renderer-backgrounding'
+            '--disable-renderer-backgrounding',
+            '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
         ]
     }
 });
@@ -71,7 +78,7 @@ const client = new Client({
 let qrActual = null;
 let estadoSesion = 'Desconectado';
 
-// Ping Keep-Alive cada 45 segundos
+// Ping Keep-Alive cada 45 segundos para mantener activo Puppeteer
 setInterval(async () => {
     if (client && client.info && client.info.wid) {
         try {
@@ -150,7 +157,6 @@ client.on('message', async (msg) => {
 
     if (prospecto.iaActiva !== false) {
         try {
-            // Obtener el chat para simular "Escribiendo..."
             const chat = await msg.getChat();
             await chat.sendStateTyping();
 
@@ -160,7 +166,6 @@ client.on('message', async (msg) => {
                 contents: promptCompleto
             });
 
-            // Pequeña pausa natural simulando escritura humana
             await new Promise(r => setTimeout(r, 2000));
 
             const textoBot = response.text;
@@ -205,14 +210,11 @@ async function iniciarProspeccionMasiva() {
 
                 console.log(`📤 Enviando a ${p.empresa} (${chatId})...`);
 
-                // Simular "Escribiendo..." antes de enviar el primer mensaje
                 try {
                     const chat = await client.getChatById(chatId);
                     await chat.sendStateTyping();
                     await new Promise(r => setTimeout(r, 2500));
-                } catch (errTyping) {
-                    // Si no logra obtener el chat previo, procede con el envío directo
-                }
+                } catch (errTyping) {}
 
                 await client.sendMessage(chatId, mensajeInicial);
 
