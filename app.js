@@ -17,10 +17,10 @@ app.use(express.static('public'));
 
 const upload = multer({ dest: 'uploads/' });
 
-// Inicializar cliente de Gemini AI usando la variable de entorno
+// Inicializar cliente Gemini con la API Key
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
-// Persistencia de datos local
+// Persistencia de datos en archivos JSON locales
 const DB_FILE = './db_prospectos.json';
 const CHATS_FILE = './db_chats.json';
 
@@ -32,11 +32,11 @@ function guardarBD() {
         fs.writeFileSync(DB_FILE, JSON.stringify(prospectos, null, 2));
         fs.writeFileSync(CHATS_FILE, JSON.stringify(historialChats, null, 2));
     } catch (e) {
-        console.error('Error guardando archivos JSON local:', e);
+        console.error('Error al guardar datos locales:', e);
     }
 }
 
-// Configuración de Puppeteer optimizada para servidores Linux (Render/Railway)
+// Configuración de Puppeteer optimizada para servidores Linux
 const client = new Client({
     authStrategy: new LocalAuth(),
     puppeteer: {
@@ -57,20 +57,27 @@ const client = new Client({
 let qrActual = null;
 let estadoSesion = 'Desconectado';
 
-// Evento al generar un nuevo QR
+// Eventos de sesión de WhatsApp
 client.on('qr', async (qr) => {
-    console.log('🔄 Nuevo código QR generado. Transmitiendo al Dashboard...');
+    console.log('🔄 Nuevo código QR generado.');
     estadoSesion = 'Esperando escaneo';
     try {
         qrActual = await QRCode.toDataURL(qr);
         io.emit('qr', qrActual);
         io.emit('estado', estadoSesion);
     } catch (e) {
-        console.error('Error convirtiendo QR a imagen DataURL:', e);
+        console.error('Error generando DataURL del QR:', e);
     }
 });
 
-// Evento al conectar la sesión de WhatsApp
+client.on('authenticated', () => {
+    console.log('🔑 Sesión de WhatsApp autenticada correctamente.');
+    estadoSesion = 'Conectado';
+    qrActual = null;
+    io.emit('estado', estadoSesion);
+    io.emit('qr_resuelto');
+});
+
 client.on('ready', () => {
     console.log('✅ Cliente de WhatsApp vinculado y activo.');
     estadoSesion = 'Conectado';
@@ -79,7 +86,14 @@ client.on('ready', () => {
     io.emit('qr_resuelto');
 });
 
-// Evento al recibir o interceptar mensajes entrantes
+client.on('disconnected', (reason) => {
+    console.log('⚠️ Cliente desconectado:', reason);
+    estadoSesion = 'Desconectado';
+    qrActual = null;
+    io.emit('estado', estadoSesion);
+});
+
+// Evento al recibir mensajes
 client.on('message', async (msg) => {
     if (msg.from.endsWith('@g.us') || msg.from.endsWith('@newsletter')) return;
 
@@ -91,7 +105,7 @@ client.on('message', async (msg) => {
     const msgEntrante = { emisor: 'cliente', texto: textoCliente, hora: new Date().toLocaleTimeString() };
     historialChats[numero].push(msgEntrante);
 
-    // Actualizar o crear registro en prospectos
+    // Actualizar o crear registro de prospecto
     let prospecto = prospectos.find(p => p.telefono == numero || p.telefono.endsWith(numero));
     if (!prospecto) {
         prospecto = { empresa: 'Cliente WhatsApp', telefono: numero, estado: 'Respondió', ultimoMensaje: textoCliente };
@@ -102,10 +116,10 @@ client.on('message', async (msg) => {
     }
     guardarBD();
 
-    // Notificar al Dashboard vía WebSockets
+    // Notificar al Dashboard en tiempo real
     io.emit('nuevo_mensaje', { telefono: numero, mensaje: msgEntrante, prospectos });
 
-    // Generar respuesta con IA de Gemini
+    // Respuesta comercial automatizada con Gemini AI
     try {
         const response = await ai.models.generateContent({
             model: 'gemini-2.5-flash',
@@ -121,25 +135,36 @@ client.on('message', async (msg) => {
 
         io.emit('nuevo_mensaje', { telefono: numero, mensaje: msgBot, prospectos });
     } catch (err) {
-        console.error('Error respondiendo con Gemini AI:', err);
+        console.error('Error al responder con Gemini AI:', err);
     }
 });
 
-// Conexión inicial de clientes WebSockets en la página Web
+// Conexión inicial de la página web vía WebSockets
 io.on('connection', (socket) => {
+    // Verificar si el cliente de WhatsApp ya tiene la sesión cargada
+    if (client.info && client.info.wid) {
+        estadoSesion = 'Conectado';
+    }
+
     socket.emit('estado', estadoSesion);
-    if (qrActual) socket.emit('qr', qrActual);
+
+    if (estadoSesion === 'Conectado') {
+        socket.emit('qr_resuelto');
+    } else if (qrActual) {
+        socket.emit('qr', qrActual);
+    }
+
     socket.emit('cargar_chats', { prospectos, historialChats });
 });
 
-// Endpoints REST de la API
+// Rutas de API REST
 app.get('/api/prospectos', (req, res) => res.json(prospectos));
 app.get('/api/chats/:telefono', (req, res) => {
     const chat = historialChats[req.params.telefono] || [];
     res.json(chat);
 });
 
-// Carga masiva de prospectos vía Excel
+// Carga de Excel
 app.post('/api/cargar-excel', upload.single('archivo'), (req, res) => {
     try {
         const workbook = xlsx.readFile(req.file.path);
@@ -173,9 +198,9 @@ app.post('/webhook-calendly', (req, res) => {
     res.sendStatus(200);
 });
 
-// Iniciar servidor HTTP
+// Iniciar servidor web y bot
 const PORT = process.env.PORT || 10000;
 server.listen(PORT, () => {
-    console.log(`🚀 Servidor y Dashboard Admin activos en puerto ${PORT}`);
+    console.log(`🚀 Servidor e Infraestructura activos en el puerto ${PORT}`);
     client.initialize();
 });
