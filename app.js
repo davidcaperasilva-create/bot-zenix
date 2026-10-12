@@ -71,7 +71,7 @@ const client = new Client({
 let qrActual = null;
 let estadoSesion = 'Desconectado';
 
-// Ping periódico para mantener Chromium y la conexión WebSockets activos
+// Ping Keep-Alive cada 45 segundos
 setInterval(async () => {
     if (client && client.info && client.info.wid) {
         try {
@@ -81,7 +81,7 @@ setInterval(async () => {
             console.error('⚠️ Fallo en Keep-Alive WhatsApp:', e.message || e);
         }
     }
-}, 45000); // Cada 45 segundos
+}, 45000);
 
 client.on('qr', async (qr) => {
     console.log('🔄 Código QR generado para escaneo.');
@@ -150,14 +150,22 @@ client.on('message', async (msg) => {
 
     if (prospecto.iaActiva !== false) {
         try {
+            // Obtener el chat para simular "Escribiendo..."
+            const chat = await msg.getChat();
+            await chat.sendStateTyping();
+
             const promptCompleto = `${config.systemPrompt}\n\nEl cliente dijo: "${textoCliente}".`;
             const response = await ai.models.generateContent({
                 model: 'gemini-2.5-flash',
                 contents: promptCompleto
             });
 
+            // Pequeña pausa natural simulando escritura humana
+            await new Promise(r => setTimeout(r, 2000));
+
             const textoBot = response.text;
             await client.sendMessage(msg.from, textoBot);
+            await chat.clearState();
 
             const msgBot = { emisor: 'bot', texto: textoBot, hora: new Date().toLocaleTimeString() };
             historialChats[numero].push(msgBot);
@@ -196,6 +204,16 @@ async function iniciarProspeccionMasiva() {
                 mensajeInicial = mensajeInicial.replace(/\{Empresa\}/g, p.empresa || 'su negocio');
 
                 console.log(`📤 Enviando a ${p.empresa} (${chatId})...`);
+
+                // Simular "Escribiendo..." antes de enviar el primer mensaje
+                try {
+                    const chat = await client.getChatById(chatId);
+                    await chat.sendStateTyping();
+                    await new Promise(r => setTimeout(r, 2500));
+                } catch (errTyping) {
+                    // Si no logra obtener el chat previo, procede con el envío directo
+                }
+
                 await client.sendMessage(chatId, mensajeInicial);
 
                 p.estado = 'Contactado';
@@ -313,6 +331,12 @@ app.post('/api/enviar-manual', async (req, res) => {
         
         let numberDetails = await client.getNumberId(telLimpio);
         let chatId = numberDetails ? numberDetails._serialized : telLimpio + '@c.us';
+
+        try {
+            const chat = await client.getChatById(chatId);
+            await chat.sendStateTyping();
+            await new Promise(r => setTimeout(r, 1500));
+        } catch (errTyping) {}
 
         await client.sendMessage(chatId, texto);
 
