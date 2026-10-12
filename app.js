@@ -48,6 +48,8 @@ function guardarBD() {
 
 const client = new Client({
     authStrategy: new LocalAuth(),
+    takeoverOnConflict: true,
+    takeoverTimeoutMs: 0,
     puppeteer: {
         headless: true,
         args: [
@@ -58,13 +60,28 @@ const client = new Client({
             '--no-first-run',
             '--no-zygote',
             '--single-process',
-            '--disable-gpu'
+            '--disable-gpu',
+            '--disable-background-timer-throttling',
+            '--disable-backgrounding-occluded-windows',
+            '--disable-renderer-backgrounding'
         ]
     }
 });
 
 let qrActual = null;
 let estadoSesion = 'Desconectado';
+
+// Ping periódico para mantener Chromium y la conexión WebSockets activos
+setInterval(async () => {
+    if (client && client.info && client.info.wid) {
+        try {
+            const state = await client.getState();
+            console.log(`📡 Ping Keep-Alive WhatsApp: Estado [${state}]`);
+        } catch (e) {
+            console.error('⚠️ Fallo en Keep-Alive WhatsApp:', e.message || e);
+        }
+    }
+}, 45000); // Cada 45 segundos
 
 client.on('qr', async (qr) => {
     console.log('🔄 Código QR generado para escaneo.');
@@ -79,7 +96,7 @@ client.on('qr', async (qr) => {
 });
 
 client.on('authenticated', () => {
-    console.log('🔑 Sesión autenticada.');
+    console.log('🔑 Sesión autenticada correctamente.');
     estadoSesion = 'Conectado';
     qrActual = null;
     io.emit('estado', estadoSesion);
@@ -92,7 +109,6 @@ client.on('ready', () => {
     qrActual = null;
     io.emit('estado', estadoSesion);
     io.emit('qr_resuelto');
-    iniciarProspeccionMasiva();
 });
 
 client.on('auth_failure', (msg) => {
@@ -103,7 +119,7 @@ client.on('auth_failure', (msg) => {
 });
 
 client.on('disconnected', (reason) => {
-    console.log('⚠️ Sesión desconectada:', reason);
+    console.log('⚠️ Sesión desconectada de WhatsApp:', reason);
     estadoSesion = 'Desconectado';
     qrActual = null;
     io.emit('estado', estadoSesion);
@@ -165,18 +181,21 @@ async function iniciarProspeccionMasiva() {
     console.log('🚀 Iniciando prospección masiva...');
 
     for (let p of prospectos) {
-        if (p.estado === 'Pendiente') {
+        if (p.estado === 'Pendiente' || p.estado === 'Error') {
             if (enviosHoy >= (config.limiteDiario || 100)) break;
 
             try {
                 let telLimpio = String(p.telefono).replace(/\D/g, '');
                 if (!telLimpio.startsWith('57') && telLimpio.length === 10) telLimpio = '57' + telLimpio;
-                const chatId = telLimpio + '@c.us';
+
+                let numberDetails = await client.getNumberId(telLimpio);
+                let chatId = numberDetails ? numberDetails._serialized : telLimpio + '@c.us';
 
                 let mensajeInicial = config.mensajePlantilla || '¡Hola {Nombre}! Conoce Zenix POS.';
                 mensajeInicial = mensajeInicial.replace(/\{Nombre\}/g, p.empresa || 'Cliente');
                 mensajeInicial = mensajeInicial.replace(/\{Empresa\}/g, p.empresa || 'su negocio');
 
+                console.log(`📤 Enviando a ${p.empresa} (${chatId})...`);
                 await client.sendMessage(chatId, mensajeInicial);
 
                 p.estado = 'Contactado';
@@ -194,9 +213,10 @@ async function iniciarProspeccionMasiva() {
                 const maxMs = (config.delayMax || 35) * 1000;
                 const delayMs = Math.floor(Math.random() * (maxMs - minMs + 1)) + minMs;
 
+                console.log(`⏱️ Pausa de ${Math.round(delayMs/1000)}s...`);
                 await new Promise(resolve => setTimeout(resolve, delayMs));
             } catch (e) {
-                console.error(`❌ Error enviando a ${p.telefono}:`, e);
+                console.error(`❌ Error enviando a ${p.telefono}:`, e.message || e);
                 p.estado = 'Error';
                 guardarBD();
                 io.emit('actualizar_lista', { prospectos, metricas: calcularMetricas() });
@@ -210,12 +230,11 @@ function calcularMetricas() {
     const total = prospectos.length;
     const contactados = prospectos.filter(p => p.estado === 'Contactado' || p.estado === 'Respondió').length;
     const respondieron = prospectos.filter(p => p.estado === 'Respondió').length;
-    const pendientes = prospectos.filter(p => p.estado === 'Pendiente').length;
+    const pendientes = prospectos.filter(p => p.estado === 'Pendiente' || p.estado === 'Error').length;
     return { total, contactados, respondieron, pendientes, enviosHoy, limiteDiario: config.limiteDiario || 100 };
 }
 
 io.on('connection', (socket) => {
-    // Validar rigurosamente si el cliente está conectado de verdad
     const estaConectadoReal = Boolean(client.info && client.info.wid);
     
     if (estaConectadoReal) {
@@ -235,7 +254,6 @@ app.get('/api/prospectos', (req, res) => res.json(prospectos));
 app.get('/api/config', (req, res) => res.json(config));
 app.get('/api/metricas', (req, res) => res.json(calcularMetricas()));
 
-// Ruta REST para forzar el reinicio de la sesión de WhatsApp y pedir nuevo QR
 app.post('/api/reset-sesion', async (req, res) => {
     try {
         console.log('🔄 Reseteando cliente de WhatsApp...');
@@ -292,7 +310,9 @@ app.post('/api/enviar-manual', async (req, res) => {
     try {
         let telLimpio = String(telefono).replace(/\D/g, '');
         if (!telLimpio.startsWith('57') && telLimpio.length === 10) telLimpio = '57' + telLimpio;
-        const chatId = telLimpio + '@c.us';
+        
+        let numberDetails = await client.getNumberId(telLimpio);
+        let chatId = numberDetails ? numberDetails._serialized : telLimpio + '@c.us';
 
         await client.sendMessage(chatId, texto);
 
@@ -307,6 +327,7 @@ app.post('/api/enviar-manual', async (req, res) => {
         io.emit('nuevo_mensaje', { telefono, mensaje: msgManual, prospectos, metricas: calcularMetricas() });
         res.json({ success: true });
     } catch (e) {
+        console.error("Error envío manual:", e);
         res.status(500).json({ error: 'Error enviando mensaje' });
     }
 });
