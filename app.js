@@ -61,7 +61,7 @@ const UA_WIN = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KH
 
 function crearClienteWhatsApp() {
     return new Client({
-        authStrategy: new LocalAuth({ clientId: "zenix-windows-client" }),
+        authStrategy: new LocalAuth({ clientId: "zenix-win-frame-fix" }),
         takeoverOnConflict: true,
         takeoverTimeoutMs: 0,
         authTimeoutMs: 120000,
@@ -79,6 +79,7 @@ function crearClienteWhatsApp() {
                 '--disable-background-timer-throttling',
                 '--disable-backgrounding-occluded-windows',
                 '--disable-renderer-backgrounding',
+                '--js-flags=--max-old-space-size=256',
                 `--user-agent=${UA_WIN}`
             ]
         }
@@ -185,7 +186,7 @@ function registrarEventosCliente(clienteInstancia) {
                 const textoBot = response.text;
                 await new Promise(r => setTimeout(r, 2000));
 
-                await clienteInstancia.sendMessage(msg.from, textoBot);
+                await enviarMensajeConReintento(msg.from, textoBot);
                 console.log(`🤖 Respuesta Gemini enviada a ${numero}`);
 
                 const msgBot = { emisor: 'bot', texto: textoBot, hora: new Date().toLocaleTimeString() };
@@ -202,12 +203,37 @@ function registrarEventosCliente(clienteInstancia) {
 
 registrarEventosCliente(client);
 
-// Función universal de obtención segura de chatId
+async function asegurarPaginaActiva() {
+    try {
+        if (client.pupPage && client.pupPage.isClosed && client.pupPage.isClosed()) {
+            console.log('🔄 Reabriendo página Puppeteer cerrada...');
+            const pages = await client.pupBrowser.pages();
+            if (pages.length > 0) {
+                client.pupPage = pages[0];
+            }
+        }
+    } catch (e) {}
+}
+
+async function enviarMensajeConReintento(chatId, texto, reintentos = 2) {
+    for (let intento = 1; intento <= reintentos; intento++) {
+        try {
+            await asegurarPaginaActiva();
+            return await client.sendMessage(chatId, texto);
+        } catch (err) {
+            console.log(`⚠️ Intento ${intento} falló al enviar a ${chatId}: ${err.message}`);
+            if (intento === reintentos) throw err;
+            await new Promise(r => setTimeout(r, 2000));
+        }
+    }
+}
+
 async function obtenerChatIdSeguro(telefono) {
     let telLimpio = String(telefono).replace(/\D/g, '');
     if (!telLimpio.startsWith('57') && telLimpio.length === 10) telLimpio = '57' + telLimpio;
 
     try {
+        await asegurarPaginaActiva();
         const numberId = await client.getNumberId(telLimpio);
         if (numberId && numberId._serialized) {
             return numberId._serialized;
@@ -241,7 +267,7 @@ async function iniciarProspeccionMasiva() {
 
                 console.log(`📤 Enviando a ${p.empresa} (${chatId})...`);
 
-                await client.sendMessage(chatId, mensajeInicial);
+                await enviarMensajeConReintento(chatId, mensajeInicial);
                 console.log(`✅ Enviado exitosamente a ${p.empresa}`);
 
                 p.estado = 'Contactado';
@@ -361,7 +387,7 @@ app.post('/api/enviar-manual', async (req, res) => {
         const chatId = await obtenerChatIdSeguro(telefono);
 
         console.log(`📤 Envío manual a ${chatId}: "${texto}"`);
-        await client.sendMessage(chatId, texto);
+        await enviarMensajeConReintento(chatId, texto);
 
         const msgManual = { emisor: 'asesor', texto, hora: new Date().toLocaleTimeString() };
         if (!historialChats[telefono]) historialChats[telefono] = [];
