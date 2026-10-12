@@ -7,6 +7,7 @@ const xlsx = require('xlsx');
 const multer = require('multer');
 const { GoogleGenAI } = require('@google/genai');
 const fs = require('fs');
+const path = require('path');
 
 const app = express();
 const server = http.createServer(app);
@@ -46,138 +47,159 @@ function guardarBD() {
     }
 }
 
-const UA_WIN_FULL = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+// Función para purgar carpetas de autenticación atascadas
+function purgarAutenticacion() {
+    const carpetas = ['./.wwebjs_auth', './.wwebjs_cache'];
+    carpetas.forEach(dir => {
+        if (fs.existsSync(dir)) {
+            try {
+                fs.rmSync(dir, { recursive: true, force: true });
+                console.log(`🧹 Carpeta de sesión eliminada: ${dir}`);
+            } catch (err) {
+                console.error(`Error borrando ${dir}:`, err.message);
+            }
+        }
+    });
+}
 
-const client = new Client({
-    authStrategy: new LocalAuth(),
-    takeoverOnConflict: true,
-    takeoverTimeoutMs: 0,
-    authTimeoutMs: 120000,
-    puppeteer: {
-        headless: true,
-        args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-accelerated-2d-canvas',
-            '--no-first-run',
-            '--no-zygote',
-            '--single-process',
-            '--disable-gpu',
-            '--disable-background-timer-throttling',
-            '--disable-backgrounding-occluded-windows',
-            '--disable-renderer-backgrounding',
-            `--user-agent=${UA_WIN_FULL}`
-        ]
-    }
-});
+const UA_WINDOWS_STABLE = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
 
+function crearClienteWhatsApp() {
+    return new Client({
+        authStrategy: new LocalAuth({ clientId: "zenix-win-session" }),
+        takeoverOnConflict: true,
+        takeoverTimeoutMs: 0,
+        authTimeoutMs: 120000,
+        webVersionCache: {
+            type: 'remote',
+            remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html'
+        },
+        puppeteer: {
+            headless: true,
+            args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-accelerated-2d-canvas',
+                '--no-first-run',
+                '--no-zygote',
+                '--single-process',
+                '--disable-gpu',
+                '--disable-background-timer-throttling',
+                '--disable-backgrounding-occluded-windows',
+                '--disable-renderer-backgrounding',
+                `--user-agent=${UA_WINDOWS_STABLE}`
+            ]
+        }
+    });
+}
+
+let client = crearClienteWhatsApp();
 let qrActual = null;
 let estadoSesion = 'Desconectado';
 
-setInterval(async () => {
-    if (client && client.info && client.info.wid) {
+function registrarEventosCliente(clienteInstancia) {
+    clienteInstancia.on('qr', async (qr) => {
+        console.log('🔄 Nuevo Código QR generado.');
+        estadoSesion = 'Esperando escaneo';
+
         try {
-            const state = await client.getState();
-            console.log(`📡 Ping WhatsApp: Estado [${state}]`);
+            if (clienteInstancia.pupPage) {
+                await clienteInstancia.pupPage.setUserAgent(UA_WINDOWS_STABLE);
+            }
+        } catch (e) {}
+
+        try {
+            qrActual = await QRCode.toDataURL(qr);
+            io.emit('qr', qrActual);
+            io.emit('estado', estadoSesion);
         } catch (e) {
-            console.error('⚠️ Keep-Alive Error:', e.message || e);
+            console.error('Error QR:', e);
         }
-    }
-}, 30000);
+    });
 
-client.on('qr', async (qr) => {
-    console.log('🔄 Código QR listo para escaneo.');
-    estadoSesion = 'Esperando escaneo';
-
-    try {
-        qrActual = await QRCode.toDataURL(qr);
-        io.emit('qr', qrActual);
+    clienteInstancia.on('authenticated', () => {
+        console.log('🔑 Sesión autenticada.');
+        estadoSesion = 'Conectado';
+        qrActual = null;
         io.emit('estado', estadoSesion);
-    } catch (e) {
-        console.error('Error QR:', e);
-    }
-});
+        io.emit('qr_resuelto');
+    });
 
-client.on('authenticated', () => {
-    console.log('🔑 Sesión autenticada.');
-    estadoSesion = 'Conectado';
-    qrActual = null;
-    io.emit('estado', estadoSesion);
-    io.emit('qr_resuelto');
-});
+    clienteInstancia.on('ready', () => {
+        console.log('✅ Cliente WhatsApp LISTO.');
+        estadoSesion = 'Conectado';
+        qrActual = null;
+        io.emit('estado', estadoSesion);
+        io.emit('qr_resuelto');
+    });
 
-client.on('ready', () => {
-    console.log('✅ Cliente WhatsApp LISTO.');
-    estadoSesion = 'Conectado';
-    qrActual = null;
-    io.emit('estado', estadoSesion);
-    io.emit('qr_resuelto');
-});
+    clienteInstancia.on('auth_failure', (msg) => {
+        console.error('❌ Falla autenticación:', msg);
+        estadoSesion = 'Desconectado';
+        qrActual = null;
+        io.emit('estado', estadoSesion);
+    });
 
-client.on('auth_failure', (msg) => {
-    console.error('❌ Falla autenticación:', msg);
-    estadoSesion = 'Desconectado';
-    qrActual = null;
-    io.emit('estado', estadoSesion);
-});
+    clienteInstancia.on('disconnected', (reason) => {
+        console.log('⚠️ WhatsApp desconectado:', reason);
+        estadoSesion = 'Desconectado';
+        qrActual = null;
+        io.emit('estado', estadoSesion);
+    });
 
-client.on('disconnected', (reason) => {
-    console.log('⚠️ WhatsApp desconectado:', reason);
-    estadoSesion = 'Desconectado';
-    qrActual = null;
-    io.emit('estado', estadoSesion);
-});
+    clienteInstancia.on('message', async (msg) => {
+        if (msg.from.endsWith('@g.us') || msg.from.endsWith('@newsletter') || msg.from.includes('status@broadcast')) return;
 
-client.on('message', async (msg) => {
-    if (msg.from.endsWith('@g.us') || msg.from.endsWith('@newsletter') || msg.from.includes('status@broadcast')) return;
+        const numero = msg.from.replace('@c.us', '');
+        const textoCliente = msg.body;
 
-    const numero = msg.from.replace('@c.us', '');
-    const textoCliente = msg.body;
+        console.log(`📩 Mensaje de ${numero}: "${textoCliente}"`);
 
-    console.log(`📩 Mensaje de ${numero}: "${textoCliente}"`);
+        if (!historialChats[numero]) historialChats[numero] = [];
+        const msgEntrante = { emisor: 'cliente', texto: textoCliente, hora: new Date().toLocaleTimeString() };
+        historialChats[numero].push(msgEntrante);
 
-    if (!historialChats[numero]) historialChats[numero] = [];
-    const msgEntrante = { emisor: 'cliente', texto: textoCliente, hora: new Date().toLocaleTimeString() };
-    historialChats[numero].push(msgEntrante);
-
-    let prospecto = prospectos.find(p => p.telefono == numero || p.telefono.endsWith(numero));
-    if (!prospecto) {
-        prospecto = { empresa: 'Cliente WhatsApp', telefono: numero, estado: 'Respondió', ultimoMensaje: textoCliente, iaActiva: true };
-        prospectos.push(prospecto);
-    } else {
-        prospecto.estado = 'Respondió';
-        prospecto.ultimoMensaje = textoCliente;
-        if (prospecto.iaActiva === undefined) prospecto.iaActiva = true;
-    }
-    guardarBD();
-
-    io.emit('nuevo_mensaje', { telefono: numero, mensaje: msgEntrante, prospectos, metricas: calcularMetricas() });
-
-    if (prospecto.iaActiva !== false) {
-        try {
-            const promptCompleto = `${config.systemPrompt}\n\nEl cliente dijo: "${textoCliente}".`;
-            const response = await ai.models.generateContent({
-                model: 'gemini-2.5-flash',
-                contents: promptCompleto
-            });
-
-            const textoBot = response.text;
-            await new Promise(r => setTimeout(r, 2000));
-
-            await client.sendMessage(msg.from, textoBot);
-            console.log(`🤖 Respuesta enviada a ${numero}`);
-
-            const msgBot = { emisor: 'bot', texto: textoBot, hora: new Date().toLocaleTimeString() };
-            historialChats[numero].push(msgBot);
-            guardarBD();
-
-            io.emit('nuevo_mensaje', { telefono: numero, mensaje: msgBot, prospectos, metricas: calcularMetricas() });
-        } catch (err) {
-            console.error('❌ Error Gemini AI:', err.message || err);
+        let prospecto = prospectos.find(p => p.telefono == numero || p.telefono.endsWith(numero));
+        if (!prospecto) {
+            prospecto = { empresa: 'Cliente WhatsApp', telefono: numero, estado: 'Respondió', ultimoMensaje: textoCliente, iaActiva: true };
+            prospectos.push(prospecto);
+        } else {
+            prospecto.estado = 'Respondió';
+            prospecto.ultimoMensaje = textoCliente;
+            if (prospecto.iaActiva === undefined) prospecto.iaActiva = true;
         }
-    }
-});
+        guardarBD();
+
+        io.emit('nuevo_mensaje', { telefono: numero, mensaje: msgEntrante, prospectos, metricas: calcularMetricas() });
+
+        if (prospecto.iaActiva !== false) {
+            try {
+                const promptCompleto = `${config.systemPrompt}\n\nEl cliente dijo: "${textoCliente}".`;
+                const response = await ai.models.generateContent({
+                    model: 'gemini-2.5-flash',
+                    contents: promptCompleto
+                });
+
+                const textoBot = response.text;
+                await new Promise(r => setTimeout(r, 2000));
+
+                await clienteInstancia.sendMessage(msg.from, textoBot);
+                console.log(`🤖 Respuesta enviada a ${numero}`);
+
+                const msgBot = { emisor: 'bot', texto: textoBot, hora: new Date().toLocaleTimeString() };
+                historialChats[numero].push(msgBot);
+                guardarBD();
+
+                io.emit('nuevo_mensaje', { telefono: numero, mensaje: msgBot, prospectos, metricas: calcularMetricas() });
+            } catch (err) {
+                console.error('❌ Error Gemini AI:', err.message || err);
+            }
+        }
+    });
+}
+
+registrarEventosCliente(client);
 
 async function iniciarProspeccionMasiva() {
     if (prospectandoEnProgreso) return;
@@ -268,24 +290,28 @@ app.get('/api/prospectos', (req, res) => res.json(prospectos));
 app.get('/api/config', (req, res) => res.json(config));
 app.get('/api/metricas', (req, res) => res.json(calcularMetricas()));
 
+// Endpoint para purgar completamente la sesión física en disco y reiniciar el cliente
 app.post('/api/reset-sesion', async (req, res) => {
     try {
-        console.log('🔄 Eliminando credenciales y borrando .wwebjs_auth...');
+        console.log('🧹 PURGANDO SESIÓN Y SESIONES RESIDUALES DE DISCO...');
         estadoSesion = 'Desconectado';
         qrActual = null;
         io.emit('estado', estadoSesion);
 
-        if (fs.existsSync('./.wwebjs_auth')) {
-            fs.rmSync('./.wwebjs_auth', { recursive: true, force: true });
-        }
+        try {
+            await client.destroy();
+        } catch (eDestroy) {}
 
-        await client.destroy();
+        purgarAutenticacion();
+
+        client = crearClienteWhatsApp();
+        registrarEventosCliente(client);
         client.initialize();
 
-        res.json({ success: true, message: 'Sesión borrada. Escanea el nuevo QR.' });
+        res.json({ success: true, message: 'Sesión purgada en disco. Generando nuevo QR en Windows...' });
     } catch (e) {
         console.error('Error reset:', e);
-        res.status(500).json({ error: 'Error reseteando sesión' });
+        res.status(500).json({ error: 'Error purgando sesión' });
     }
 });
 
@@ -385,21 +411,5 @@ app.post('/api/cargar-excel', upload.single('archivo'), (req, res) => {
 const PORT = process.env.PORT || 10000;
 server.listen(PORT, () => {
     console.log(`🚀 Servidor Zenix escuchando en puerto ${PORT}`);
-
-    // Inyectar spoofing directo de navegador antes de navegar a WhatsApp Web
-    client.on('loading_screen', async () => {
-        try {
-            if (client.pupPage) {
-                await client.pupPage.evaluateOnNewDocument(() => {
-                    Object.defineProperty(navigator, 'platform', { get: () => 'Win32' });
-                    Object.defineProperty(navigator, 'vendor', { get: () => 'Google Inc.' });
-                    Object.defineProperty(navigator, 'userAgent', { 
-                        get: () => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36' 
-                    });
-                });
-            }
-        } catch (e) {}
-    });
-
     client.initialize();
 });
