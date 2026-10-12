@@ -88,7 +88,7 @@ client.on('disconnected', () => {
 });
 
 client.on('message', async (msg) => {
-    if (msg.from.endsWith('@g.us') || msg.from.endsWith('@newsletter')) return;
+    if (msg.from.endsWith('@g.us') || msg.from.endsWith('@newsletter') || msg.from.includes('status@broadcast')) return;
 
     const numero = msg.from.replace('@c.us', '');
     const textoCliente = msg.body;
@@ -135,7 +135,7 @@ async function iniciarProspeccionMasiva() {
     for (let p of prospectos) {
         if (p.estado === 'Pendiente') {
             try {
-                let telLimpio = p.telefono.replace(/\D/g, '');
+                let telLimpio = String(p.telefono).replace(/\D/g, '');
                 if (!telLimpio.startsWith('57') && telLimpio.length === 10) {
                     telLimpio = '57' + telLimpio;
                 }
@@ -183,10 +183,18 @@ app.post('/api/iniciar-prospeccion', (req, res) => {
 app.post('/api/cargar-excel', upload.single('archivo'), (req, res) => {
     try {
         const workbook = xlsx.readFile(req.file.path);
-        const rows = xlsx.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]]);
+        const sheetName = workbook.SheetNames[0];
+        const rows = xlsx.utils.sheet_to_json(workbook.Sheets[sheetName]);
+        
+        let agregados = 0;
         rows.forEach(row => {
-            let tel = String(row.Telefono || row.telefono || row.Celular || row.celular || '').replace(/\D/g, '');
-            let emp = row.Empresa || row.empresa || row.Nombre || row.nombre || 'Empresa';
+            // Check all common field names for Phone/Contact
+            let telRaw = row.Contacto || row.contacto || row.Telefono || row.telefono || row.Celular || row.celular || row.Phone || row.phone || '';
+            let tel = String(telRaw).replace(/\D/g, '');
+
+            // Check all common field names for Name/Company
+            let emp = row.Nombre || row.nombre || row.Empresa || row.empresa || row.Cliente || row.cliente || 'Empresa';
+
             if (tel && !prospectos.some(p => p.telefono === tel)) {
                 prospectos.push({ 
                     empresa: emp, 
@@ -194,16 +202,20 @@ app.post('/api/cargar-excel', upload.single('archivo'), (req, res) => {
                     estado: 'Pendiente', 
                     ultimoMensaje: '-' 
                 });
+                agregados++;
             }
         });
+
         guardarBD();
         fs.unlinkSync(req.file.path);
+        
         io.emit('actualizar_lista', prospectos);
         
         iniciarProspeccionMasiva();
         
-        res.json({ success: true, total: prospectos.length });
+        res.json({ success: true, agregados, total: prospectos.length });
     } catch (e) {
+        console.error("Error procesando Excel:", e);
         res.status(500).json({ error: 'Error al procesar el archivo Excel' });
     }
 });
