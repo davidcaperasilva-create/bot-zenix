@@ -17,10 +17,10 @@ app.use(express.static('public'));
 
 const upload = multer({ dest: 'uploads/' });
 
-// Inicializar cliente Gemini
+// Inicializar cliente de Gemini AI usando la variable de entorno
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
-// Persistencia de datos
+// Persistencia de datos local
 const DB_FILE = './db_prospectos.json';
 const CHATS_FILE = './db_chats.json';
 
@@ -28,11 +28,15 @@ let prospectos = fs.existsSync(DB_FILE) ? JSON.parse(fs.readFileSync(DB_FILE, 'u
 let historialChats = fs.existsSync(CHATS_FILE) ? JSON.parse(fs.readFileSync(CHATS_FILE, 'utf8')) : {};
 
 function guardarBD() {
-    fs.writeFileSync(DB_FILE, JSON.stringify(prospectos, null, 2));
-    fs.writeFileSync(CHATS_FILE, JSON.stringify(historialChats, null, 2));
+    try {
+        fs.writeFileSync(DB_FILE, JSON.stringify(prospectos, null, 2));
+        fs.writeFileSync(CHATS_FILE, JSON.stringify(historialChats, null, 2));
+    } catch (e) {
+        console.error('Error guardando archivos JSON local:', e);
+    }
 }
 
-// Configuración de Puppeteer para Render
+// Configuración de Puppeteer optimizada para servidores Linux (Render/Railway)
 const client = new Client({
     authStrategy: new LocalAuth(),
     puppeteer: {
@@ -53,34 +57,41 @@ const client = new Client({
 let qrActual = null;
 let estadoSesion = 'Desconectado';
 
+// Evento al generar un nuevo QR
 client.on('qr', async (qr) => {
-    console.log('🔄 Nuevo código QR generado.');
+    console.log('🔄 Nuevo código QR generado. Transmitiendo al Dashboard...');
     estadoSesion = 'Esperando escaneo';
-    qrActual = await QRCode.toDataURL(qr);
-    io.emit('qr', qrActual);
-    io.emit('estado', estadoSesion);
+    try {
+        qrActual = await QRCode.toDataURL(qr);
+        io.emit('qr', qrActual);
+        io.emit('estado', estadoSesion);
+    } catch (e) {
+        console.error('Error convirtiendo QR a imagen DataURL:', e);
+    }
 });
 
+// Evento al conectar la sesión de WhatsApp
 client.on('ready', () => {
-    console.log('✅ WhatsApp vinculado correctamente.');
+    console.log('✅ Cliente de WhatsApp vinculado y activo.');
     estadoSesion = 'Conectado';
     qrActual = null;
     io.emit('estado', estadoSesion);
     io.emit('qr_resuelto');
 });
 
+// Evento al recibir o interceptar mensajes entrantes
 client.on('message', async (msg) => {
     if (msg.from.endsWith('@g.us') || msg.from.endsWith('@newsletter')) return;
 
     const numero = msg.from.replace('@c.us', '');
     const textoCliente = msg.body;
 
-    // Guardar chat
+    // Registrar mensaje del cliente
     if (!historialChats[numero]) historialChats[numero] = [];
     const msgEntrante = { emisor: 'cliente', texto: textoCliente, hora: new Date().toLocaleTimeString() };
     historialChats[numero].push(msgEntrante);
 
-    // Actualizar prospecto
+    // Actualizar o crear registro en prospectos
     let prospecto = prospectos.find(p => p.telefono == numero || p.telefono.endsWith(numero));
     if (!prospecto) {
         prospecto = { empresa: 'Cliente WhatsApp', telefono: numero, estado: 'Respondió', ultimoMensaje: textoCliente };
@@ -91,10 +102,10 @@ client.on('message', async (msg) => {
     }
     guardarBD();
 
-    // Notificar al Dashboard en tiempo real
+    // Notificar al Dashboard vía WebSockets
     io.emit('nuevo_mensaje', { telefono: numero, mensaje: msgEntrante, prospectos });
 
-    // Respuesta con IA
+    // Generar respuesta con IA de Gemini
     try {
         const response = await ai.models.generateContent({
             model: 'gemini-2.5-flash',
@@ -110,24 +121,25 @@ client.on('message', async (msg) => {
 
         io.emit('nuevo_mensaje', { telefono: numero, mensaje: msgBot, prospectos });
     } catch (err) {
-        console.error('Error Gemini AI:', err);
+        console.error('Error respondiendo con Gemini AI:', err);
     }
 });
 
-// Eventos de conexión WebSocket con la web
+// Conexión inicial de clientes WebSockets en la página Web
 io.on('connection', (socket) => {
     socket.emit('estado', estadoSesion);
     if (qrActual) socket.emit('qr', qrActual);
     socket.emit('cargar_chats', { prospectos, historialChats });
 });
 
-// API Endpoints
+// Endpoints REST de la API
 app.get('/api/prospectos', (req, res) => res.json(prospectos));
 app.get('/api/chats/:telefono', (req, res) => {
     const chat = historialChats[req.params.telefono] || [];
     res.json(chat);
 });
 
+// Carga masiva de prospectos vía Excel
 app.post('/api/cargar-excel', upload.single('archivo'), (req, res) => {
     try {
         const workbook = xlsx.readFile(req.file.path);
@@ -135,20 +147,35 @@ app.post('/api/cargar-excel', upload.single('archivo'), (req, res) => {
         rows.forEach(row => {
             let tel = String(row.Telefono || row.telefono || row.Celular || '').replace(/\D/g, '');
             if (tel && !prospectos.some(p => p.telefono === tel)) {
-                prospectos.push({ empresa: row.Empresa || row.Nombre || 'Empresa', telefono: tel, estado: 'Pendiente', ultimoMensaje: '-' });
+                prospectos.push({ 
+                    empresa: row.Empresa || row.empresa || row.Nombre || 'Empresa', 
+                    telefono: tel, 
+                    estado: 'Pendiente', 
+                    ultimoMensaje: '-' 
+                });
             }
         });
         guardarBD();
         fs.unlinkSync(req.file.path);
         io.emit('actualizar_lista', prospectos);
-        res.json({ success: true });
+        res.json({ success: true, total: prospectos.length });
     } catch (e) {
-        res.status(500).json({ error: 'Error procesando Excel' });
+        res.status(500).json({ error: 'Error al procesar el archivo Excel' });
     }
 });
 
+// Webhook para Calendly
+app.post('/webhook-calendly', (req, res) => {
+    const data = req.body;
+    if (data && data.payload && data.payload.invitee) {
+        console.log(`📅 Nueva demo agendada por: ${data.payload.invitee.email}`);
+    }
+    res.sendStatus(200);
+});
+
+// Iniciar servidor HTTP
 const PORT = process.env.PORT || 10000;
 server.listen(PORT, () => {
-    console.log(`🚀 Servidor en puerto ${PORT}`);
+    console.log(`🚀 Servidor y Dashboard Admin activos en puerto ${PORT}`);
     client.initialize();
 });

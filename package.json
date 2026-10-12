@@ -1,22 +1,20 @@
 {
   "name": "bot-zenix",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "Bot de WhatsApp para Zenix con Dashboard Admin e IA",
+  "main": "app.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node app.js"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "type": "commonjs",
   "dependencies": {
-    "@google/genai": "^2.28.0",
-    "express": "^5.3.0",
-    "multer": "^2.4.0",
+    "@google/genai": "^0.1.1",
+    "express": "^4.19.2",
+    "multer": "^1.4.5-lts.1",
+    "puppeteer": "^22.12.0",
+    "qrcode": "^1.5.3",
     "qrcode-terminal": "^0.12.0",
-    "socket.io": "^4.8.4",
-    "whatsapp-web.js": "^1.34.7",
+    "socket.io": "^4.7.5",
+    "whatsapp-web.js": "^1.23.0",
     "xlsx": "^0.18.5"
   }
 }
