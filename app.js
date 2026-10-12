@@ -46,7 +46,8 @@ function guardarBD() {
     }
 }
 
-// UserAgent explícito de Windows 10 Chrome para evitar que WhatsApp aplique pausas de sincronización de macOS/iOS
+const UA_WINDOWS = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+
 const client = new Client({
     authStrategy: new LocalAuth(),
     takeoverOnConflict: true,
@@ -66,7 +67,7 @@ const client = new Client({
             '--disable-background-timer-throttling',
             '--disable-backgrounding-occluded-windows',
             '--disable-renderer-backgrounding',
-            '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36'
+            `--user-agent=${UA_WINDOWS}`
         ]
     }
 });
@@ -74,7 +75,7 @@ const client = new Client({
 let qrActual = null;
 let estadoSesion = 'Desconectado';
 
-// Mantiene el WebSocket vivo enviando estado cada 30 segundos
+// Mantiene el WebSocket activo
 setInterval(async () => {
     if (client && client.info && client.info.wid) {
         try {
@@ -88,6 +89,16 @@ setInterval(async () => {
 
 client.on('qr', async (qr) => {
     console.log('🔄 Código QR generado.');
+    
+    // Forzar el UserAgent de Windows directamente en la página de Puppeteer
+    try {
+        if (client.pupPage) {
+            await client.pupPage.setUserAgent(UA_WINDOWS);
+        }
+    } catch (errUa) {
+        console.error('Error ajustando UA:', errUa.message);
+    }
+
     estadoSesion = 'Esperando escaneo';
     try {
         qrActual = await QRCode.toDataURL(qr);
@@ -272,7 +283,7 @@ app.get('/api/metricas', (req, res) => res.json(calcularMetricas()));
 
 app.post('/api/reset-sesion', async (req, res) => {
     try {
-        console.log('🔄 Reseteando sesión...');
+        console.log('🔄 Reseteando sesión y borrando auth...');
         estadoSesion = 'Desconectado';
         qrActual = null;
         io.emit('estado', estadoSesion);
@@ -284,7 +295,7 @@ app.post('/api/reset-sesion', async (req, res) => {
         await client.destroy();
         client.initialize();
 
-        res.json({ success: true, message: 'Sesión reiniciada.' });
+        res.json({ success: true, message: 'Sesión borrada. Generando nuevo QR...' });
     } catch (e) {
         console.error('Error reseteando:', e);
         res.status(500).json({ error: 'Error reseteando sesión' });
