@@ -16,8 +16,11 @@
                 <p class="text-slate-400 text-sm">Plataforma Enterprise de Prospección y Gestión de WhatsApp con IA</p>
             </div>
             <div class="flex items-center gap-3">
+                <button onclick="resetearSesion()" class="bg-amber-600 hover:bg-amber-500 text-white font-semibold px-4 py-2 rounded-lg text-sm transition shadow flex items-center gap-2">
+                    🔑 Vincular Nuevo QR
+                </button>
                 <button onclick="dispararProspeccion()" class="bg-emerald-600 hover:bg-emerald-500 text-white font-semibold px-4 py-2 rounded-lg text-sm transition shadow flex items-center gap-2">
-                    🚀 Iniciar / Forzar Envíos
+                    🚀 Iniciar Envíos
                 </button>
                 <button onclick="abrirModalConfig()" class="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 font-semibold px-4 py-2 rounded-lg text-sm transition flex items-center gap-2">
                     ⚙️ Ajustes & Anti-Ban
@@ -26,7 +29,7 @@
                 <button onclick="document.getElementById('input-excel').click()" class="bg-blue-600 hover:bg-blue-500 text-white font-semibold px-4 py-2 rounded-lg text-sm transition shadow flex items-center gap-2">
                     📁 Cargar Excel
                 </button>
-                <span id="badge-estado" class="px-3 py-1 text-xs font-semibold rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">Conectado</span>
+                <span id="badge-estado" class="px-3 py-1 text-xs font-semibold rounded-full bg-slate-700 text-slate-300 border border-slate-600">Desconectado</span>
             </div>
         </header>
 
@@ -56,18 +59,14 @@
 
         <!-- Grid Principal -->
         <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            
-            <!-- Columna Izquierda: QR & Prospectos -->
             <div class="space-y-6">
-                <!-- Tarjeta QR -->
                 <div class="bg-slate-800 border border-slate-700 rounded-xl p-5 text-center">
                     <h2 class="text-lg font-bold text-slate-200 mb-3">Conexión de WhatsApp</h2>
-                    <div id="contenedor-qr" class="flex justify-center items-center min-h-[130px] bg-slate-900 rounded-lg p-3">
-                        <p class="text-emerald-400 font-medium">✅ WhatsApp Vinculado y Activo</p>
+                    <div id="contenedor-qr" class="flex justify-center items-center min-h-[140px] bg-slate-900 rounded-lg p-3">
+                        <p class="text-slate-400 font-medium">Cargando estado...</p>
                     </div>
                 </div>
 
-                <!-- Lista de Prospectos -->
                 <div class="bg-slate-800 border border-slate-700 rounded-xl p-5">
                     <h2 class="text-lg font-bold text-slate-200 mb-3">Lista de Prospectos</h2>
                     <div id="lista-prospectos" class="space-y-2 max-h-[360px] overflow-y-auto pr-2">
@@ -76,7 +75,6 @@
                 </div>
             </div>
 
-            <!-- Columna Derecha: Visualizador de Chat & Copiloto -->
             <div class="lg:col-span-2 bg-slate-800 border border-slate-700 rounded-xl p-5 flex flex-col h-[580px]">
                 <div class="border-b border-slate-700 pb-3 mb-4 flex justify-between items-center">
                     <div>
@@ -91,12 +89,10 @@
                     </div>
                 </div>
 
-                <!-- Ventana de Mensajes -->
                 <div id="chat-mensajes" class="flex-1 overflow-y-auto space-y-3 p-3 bg-slate-900 rounded-lg border border-slate-700 mb-3">
                     <div class="text-center text-slate-500 text-sm my-auto">Haz clic en un contacto de la lista para ver la conversación.</div>
                 </div>
 
-                <!-- Input para respuesta manual de Asesor -->
                 <div id="panel-envio-manual" class="hidden flex gap-2">
                     <input type="text" id="input-mensaje-manual" placeholder="Escribe un mensaje como Asesor Humano..." class="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-4 py-2 text-sm text-white focus:outline-none focus:border-blue-500" onkeypress="if(event.key==='Enter') enviarMensajeManual()">
                     <button onclick="enviarMensajeManual()" class="bg-blue-600 hover:bg-blue-500 text-white font-semibold px-4 py-2 rounded-lg text-sm transition">
@@ -160,6 +156,9 @@
                 document.getElementById('contenedor-qr').innerHTML = `<p class="text-emerald-400 font-medium">✅ WhatsApp Vinculado y Activo</p>`;
             } else if (estado === 'Esperando escaneo') {
                 badge.className = "px-3 py-1 text-xs font-semibold rounded-full bg-amber-500/20 text-amber-400 border border-amber-500/30";
+            } else {
+                badge.className = "px-3 py-1 text-xs font-semibold rounded-full bg-slate-700 text-slate-300 border border-slate-600";
+                document.getElementById('contenedor-qr').innerHTML = `<p class="text-amber-400 font-medium">⚠️ No hay sesión activa. Generando QR...</p>`;
             }
         });
 
@@ -167,7 +166,7 @@
             document.getElementById('contenedor-qr').innerHTML = `
                 <div class="text-center">
                     <img src="${urlQr}" class="w-32 h-32 mx-auto rounded border border-slate-600 mb-1">
-                    <p class="text-[11px] text-slate-400">Escanea desde WhatsApp</p>
+                    <p class="text-[11px] text-slate-400">Escanea desde WhatsApp en tu celular</p>
                 </div>`;
         });
 
@@ -309,7 +308,16 @@
             const res = await fetch('/api/iniciar-prospeccion', { method: 'POST' });
             const data = await res.json();
             if (data.success) {
-                alert('🚀 Prospección disparada. Revisa el registro de encriptado y los estados.');
+                alert('🚀 Prospección disparada. Revisa los estados de los prospectos.');
+            }
+        }
+
+        async function resetearSesion() {
+            if (!confirm('¿Deseas desvincular la sesión actual y generar un nuevo código QR?')) return;
+            const res = await fetch('/api/reset-sesion', { method: 'POST' });
+            const data = await res.json();
+            if (data.success) {
+                alert('🔑 Sesión limpiada. Espera unos segundos mientras se genera el nuevo código QR.');
             }
         }
 
