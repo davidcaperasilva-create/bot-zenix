@@ -7,7 +7,6 @@ const xlsx = require('xlsx');
 const multer = require('multer');
 const { GoogleGenAI } = require('@google/genai');
 const fs = require('fs');
-const path = require('path');
 
 const app = express();
 const server = http.createServer(app);
@@ -43,37 +42,29 @@ function guardarBD() {
         fs.writeFileSync(CHATS_FILE, JSON.stringify(historialChats, null, 2));
         fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
     } catch (e) {
-        console.error('Error guardando archivos BD:', e);
+        console.error('Error guardando BD:', e);
     }
 }
 
-// Función para purgar carpetas de autenticación atascadas
 function purgarAutenticacion() {
-    const carpetas = ['./.wwebjs_auth', './.wwebjs_cache'];
-    carpetas.forEach(dir => {
+    ['./.wwebjs_auth', './.wwebjs_cache'].forEach(dir => {
         if (fs.existsSync(dir)) {
             try {
                 fs.rmSync(dir, { recursive: true, force: true });
-                console.log(`🧹 Carpeta de sesión eliminada: ${dir}`);
-            } catch (err) {
-                console.error(`Error borrando ${dir}:`, err.message);
-            }
+                console.log(`🧹 Borrado: ${dir}`);
+            } catch (err) {}
         }
     });
 }
 
-const UA_WINDOWS_STABLE = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
+const UA_WIN = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
 function crearClienteWhatsApp() {
     return new Client({
-        authStrategy: new LocalAuth({ clientId: "zenix-win-session" }),
+        authStrategy: new LocalAuth({ clientId: "zenix-windows-client" }),
         takeoverOnConflict: true,
         takeoverTimeoutMs: 0,
         authTimeoutMs: 120000,
-        webVersionCache: {
-            type: 'remote',
-            remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html'
-        },
         puppeteer: {
             headless: true,
             args: [
@@ -88,7 +79,7 @@ function crearClienteWhatsApp() {
                 '--disable-background-timer-throttling',
                 '--disable-backgrounding-occluded-windows',
                 '--disable-renderer-backgrounding',
-                `--user-agent=${UA_WINDOWS_STABLE}`
+                `--user-agent=${UA_WIN}`
             ]
         }
     });
@@ -98,16 +89,26 @@ let client = crearClienteWhatsApp();
 let qrActual = null;
 let estadoSesion = 'Desconectado';
 
+function aplicarSpoofingEnPagina(page) {
+    if (!page) return;
+    page.evaluateOnNewDocument(() => {
+        try {
+            Object.defineProperty(navigator, 'platform', { get: () => 'Win32' });
+            Object.defineProperty(navigator, 'userAgent', { get: () => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36' });
+            Object.defineProperty(navigator, 'appVersion', { get: () => '5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36' });
+            Object.defineProperty(navigator, 'vendor', { get: () => 'Google Inc.' });
+        } catch (e) {}
+    }).catch(() => {});
+}
+
 function registrarEventosCliente(clienteInstancia) {
     clienteInstancia.on('qr', async (qr) => {
-        console.log('🔄 Nuevo Código QR generado.');
+        console.log('🔄 Código QR generado.');
         estadoSesion = 'Esperando escaneo';
 
-        try {
-            if (clienteInstancia.pupPage) {
-                await clienteInstancia.pupPage.setUserAgent(UA_WINDOWS_STABLE);
-            }
-        } catch (e) {}
+        if (clienteInstancia.pupPage) {
+            aplicarSpoofingEnPagina(clienteInstancia.pupPage);
+        }
 
         try {
             qrActual = await QRCode.toDataURL(qr);
@@ -127,7 +128,7 @@ function registrarEventosCliente(clienteInstancia) {
     });
 
     clienteInstancia.on('ready', () => {
-        console.log('✅ Cliente WhatsApp LISTO.');
+        console.log('✅ WhatsApp Web Conectado y Listo.');
         estadoSesion = 'Conectado';
         qrActual = null;
         io.emit('estado', estadoSesion);
@@ -142,7 +143,7 @@ function registrarEventosCliente(clienteInstancia) {
     });
 
     clienteInstancia.on('disconnected', (reason) => {
-        console.log('⚠️ WhatsApp desconectado:', reason);
+        console.log('⚠️ Desconectado:', reason);
         estadoSesion = 'Desconectado';
         qrActual = null;
         io.emit('estado', estadoSesion);
@@ -185,7 +186,7 @@ function registrarEventosCliente(clienteInstancia) {
                 await new Promise(r => setTimeout(r, 2000));
 
                 await clienteInstancia.sendMessage(msg.from, textoBot);
-                console.log(`🤖 Respuesta enviada a ${numero}`);
+                console.log(`🤖 Respuesta Gemini enviada a ${numero}`);
 
                 const msgBot = { emisor: 'bot', texto: textoBot, hora: new Date().toLocaleTimeString() };
                 historialChats[numero].push(msgBot);
@@ -201,28 +202,38 @@ function registrarEventosCliente(clienteInstancia) {
 
 registrarEventosCliente(client);
 
+// Función universal de obtención segura de chatId
+async function obtenerChatIdSeguro(telefono) {
+    let telLimpio = String(telefono).replace(/\D/g, '');
+    if (!telLimpio.startsWith('57') && telLimpio.length === 10) telLimpio = '57' + telLimpio;
+
+    try {
+        const numberId = await client.getNumberId(telLimpio);
+        if (numberId && numberId._serialized) {
+            return numberId._serialized;
+        }
+    } catch (e) {
+        console.log(`⚠️ Advertencia getNumberId para ${telLimpio}:`, e.message);
+    }
+    return telLimpio + '@c.us';
+}
+
 async function iniciarProspeccionMasiva() {
     if (prospectandoEnProgreso) return;
     if (!client.info || !client.info.wid) {
-        console.log('⏳ Prospección en espera: No hay WhatsApp vinculado.');
+        console.log('⏳ Sin WhatsApp conectado.');
         return;
     }
 
     prospectandoEnProgreso = true;
-    console.log('🚀 Iniciando prospección masiva progresiva...');
+    console.log('🚀 Iniciando prospección masiva...');
 
     for (let p of prospectos) {
         if (p.estado === 'Pendiente' || p.estado === 'Error') {
-            if (enviosHoy >= (config.limiteDiario || 100)) {
-                console.log('🛑 Límite diario de envíos alcanzado.');
-                break;
-            }
+            if (enviosHoy >= (config.limiteDiario || 100)) break;
 
             try {
-                let telLimpio = String(p.telefono).replace(/\D/g, '');
-                if (!telLimpio.startsWith('57') && telLimpio.length === 10) telLimpio = '57' + telLimpio;
-
-                let chatId = telLimpio + '@c.us';
+                const chatId = await obtenerChatIdSeguro(p.telefono);
 
                 let mensajeInicial = config.mensajePlantilla || '¡Hola {Nombre}! Conoce Zenix POS.';
                 mensajeInicial = mensajeInicial.replace(/\{Nombre\}/g, p.empresa || 'Cliente');
@@ -231,7 +242,7 @@ async function iniciarProspeccionMasiva() {
                 console.log(`📤 Enviando a ${p.empresa} (${chatId})...`);
 
                 await client.sendMessage(chatId, mensajeInicial);
-                console.log(`✅ Enviado a ${p.empresa}`);
+                console.log(`✅ Enviado exitosamente a ${p.empresa}`);
 
                 p.estado = 'Contactado';
                 p.ultimoMensaje = mensajeInicial;
@@ -248,7 +259,7 @@ async function iniciarProspeccionMasiva() {
                 const maxMs = (config.delayMax || 35) * 1000;
                 const delayMs = Math.floor(Math.random() * (maxMs - minMs + 1)) + minMs;
 
-                console.log(`⏱️ Pausa de ${Math.round(delayMs/1000)}s antes del próximo envío...`);
+                console.log(`⏱️ Esperando ${Math.round(delayMs/1000)}s...`);
                 await new Promise(resolve => setTimeout(resolve, delayMs));
             } catch (e) {
                 console.error(`❌ Error enviando a ${p.telefono}:`, e.message || e);
@@ -259,7 +270,7 @@ async function iniciarProspeccionMasiva() {
         }
     }
     prospectandoEnProgreso = false;
-    console.log('🏁 Prospección completada.');
+    console.log('🏁 Prospección finalizada.');
 }
 
 function calcularMetricas() {
@@ -290,10 +301,9 @@ app.get('/api/prospectos', (req, res) => res.json(prospectos));
 app.get('/api/config', (req, res) => res.json(config));
 app.get('/api/metricas', (req, res) => res.json(calcularMetricas()));
 
-// Endpoint para purgar completamente la sesión física en disco y reiniciar el cliente
 app.post('/api/reset-sesion', async (req, res) => {
     try {
-        console.log('🧹 PURGANDO SESIÓN Y SESIONES RESIDUALES DE DISCO...');
+        console.log('🧹 Reseteando sesión por completo...');
         estadoSesion = 'Desconectado';
         qrActual = null;
         io.emit('estado', estadoSesion);
@@ -308,10 +318,10 @@ app.post('/api/reset-sesion', async (req, res) => {
         registrarEventosCliente(client);
         client.initialize();
 
-        res.json({ success: true, message: 'Sesión purgada en disco. Generando nuevo QR en Windows...' });
+        res.json({ success: true, message: 'Sesión reiniciada limpiamente.' });
     } catch (e) {
         console.error('Error reset:', e);
-        res.status(500).json({ error: 'Error purgando sesión' });
+        res.status(500).json({ error: 'Error reseteando' });
     }
 });
 
@@ -348,10 +358,7 @@ app.post('/api/toggle-ia', (req, res) => {
 app.post('/api/enviar-manual', async (req, res) => {
     const { telefono, texto } = req.body;
     try {
-        let telLimpio = String(telefono).replace(/\D/g, '');
-        if (!telLimpio.startsWith('57') && telLimpio.length === 10) telLimpio = '57' + telLimpio;
-        
-        let chatId = telLimpio + '@c.us';
+        const chatId = await obtenerChatIdSeguro(telefono);
 
         console.log(`📤 Envío manual a ${chatId}: "${texto}"`);
         await client.sendMessage(chatId, texto);
