@@ -9,14 +9,18 @@
 </head>
 <body class="bg-slate-900 text-white min-h-screen font-sans">
     <div class="container mx-auto p-6">
-        <!-- Header -->
-        <header class="flex justify-between items-center mb-8 border-b border-slate-800 pb-4">
+        <!-- Header con Botón de Carga de Excel -->
+        <header class="flex justify-between items-center mb-6 border-b border-slate-800 pb-4">
             <div>
                 <h1 class="text-3xl font-bold text-blue-400">Zenix Control Center</h1>
-                <p class="text-slate-400 text-sm">Gestión de WhatsApp, IA y Chats en vivo</p>
+                <p class="text-slate-400 text-sm">Gestión de WhatsApp, IA y Prospectos en vivo</p>
             </div>
             <div class="flex items-center gap-4">
-                <span id="badge-estado" class="px-3 py-1 text-xs font-semibold rounded-full bg-yellow-500/20 text-yellow-400 border border-yellow-500/30">Cargando...</span>
+                <input type="file" id="input-excel" accept=".xlsx, .xls" class="hidden" onchange="subirExcel(event)">
+                <button onclick="document.getElementById('input-excel').click()" class="bg-blue-600 hover:bg-blue-500 text-white font-semibold px-4 py-2 rounded-lg text-sm transition shadow flex items-center gap-2">
+                    📁 Cargar Excel
+                </button>
+                <span id="badge-estado" class="px-3 py-1 text-xs font-semibold rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">Conectado</span>
             </div>
         </header>
 
@@ -28,30 +32,30 @@
                 <!-- Tarjeta QR -->
                 <div class="bg-slate-800 border border-slate-700 rounded-xl p-5 text-center">
                     <h2 class="text-lg font-bold text-slate-200 mb-3">Conexión de WhatsApp</h2>
-                    <div id="contenedor-qr" class="flex justify-center items-center min-h-[200px] bg-slate-900 rounded-lg p-3">
-                        <p class="text-slate-500 text-sm">Cargando estado...</p>
+                    <div id="contenedor-qr" class="flex justify-center items-center min-h-[160px] bg-slate-900 rounded-lg p-3">
+                        <p class="text-emerald-400 font-medium">✅ WhatsApp Vinculado y Activo</p>
                     </div>
                 </div>
 
                 <!-- Lista de Prospectos -->
                 <div class="bg-slate-800 border border-slate-700 rounded-xl p-5">
-                    <h2 class="text-lg font-bold text-slate-200 mb-3">Prospectos</h2>
-                    <div id="lista-prospectos" class="space-y-2 max-h-[400px] overflow-y-auto pr-2">
+                    <h2 class="text-lg font-bold text-slate-200 mb-3">Lista de Prospectos</h2>
+                    <div id="lista-prospectos" class="space-y-2 max-h-[380px] overflow-y-auto pr-2">
                         <p class="text-slate-500 text-sm">No hay prospectos cargados.</p>
                     </div>
                 </div>
             </div>
 
-            <!-- Columna Derecha: Visualizador de Chats en Vivo -->
-            <div class="lg:col-span-2 bg-slate-800 border border-slate-700 rounded-xl p-5 flex flex-col h-[650px]">
+            <!-- Columna Derecha: Visualizador de Chat en Vivo -->
+            <div class="lg:col-span-2 bg-slate-800 border border-slate-700 rounded-xl p-5 flex flex-col h-[600px]">
                 <div class="border-b border-slate-700 pb-3 mb-4">
                     <h2 id="chat-titulo" class="text-lg font-bold text-blue-400">Selecciona un prospecto para ver el chat</h2>
-                    <p id="chat-subtitulo" class="text-xs text-slate-400">Monitoreo en tiempo real de la IA</p>
+                    <p id="chat-subtitulo" class="text-xs text-slate-400">Monitoreo en tiempo real del bot de IA</p>
                 </div>
 
-                <!-- Ventana de mensajes -->
+                <!-- Ventana de Mensajes -->
                 <div id="chat-mensajes" class="flex-1 overflow-y-auto space-y-3 p-3 bg-slate-900 rounded-lg border border-slate-700">
-                    <div class="text-center text-slate-500 text-sm my-auto">Haz clic en un contacto de la lista para inspeccionar la conversación.</div>
+                    <div class="text-center text-slate-500 text-sm my-auto">Haz clic en un contacto de la lista izquierda para inspeccionar la conversación.</div>
                 </div>
             </div>
 
@@ -64,7 +68,6 @@
         let todosLosProspectos = [];
         let historialCompleto = {};
 
-        // Escuchar eventos de socket
         socket.on('estado', (estado) => {
             const badge = document.getElementById('badge-estado');
             badge.innerText = estado;
@@ -79,8 +82,8 @@
         socket.on('qr', (urlQr) => {
             document.getElementById('contenedor-qr').innerHTML = `
                 <div class="text-center">
-                    <img src="${urlQr}" class="w-48 h-48 mx-auto rounded border border-slate-600 mb-2">
-                    <p class="text-xs text-slate-400">Escanea este código desde WhatsApp > Dispositivos vinculados</p>
+                    <img src="${urlQr}" class="w-40 h-40 mx-auto rounded border border-slate-600 mb-2">
+                    <p class="text-xs text-slate-400">Escanea este código desde WhatsApp</p>
                 </div>`;
         });
 
@@ -103,6 +106,11 @@
             if (prospectoActivo === data.telefono) {
                 renderChat(data.telefono);
             }
+        });
+
+        socket.on('actualizar_lista', (prospectos) => {
+            todosLosProspectos = prospectos;
+            renderProspectos();
         });
 
         function renderProspectos() {
@@ -149,6 +157,29 @@
             `).join('');
 
             cont.scrollTop = cont.scrollHeight;
+        }
+
+        async function subirExcel(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const formData = new FormData();
+            formData.append('archivo', file);
+
+            try {
+                const res = await fetch('/api/cargar-excel', {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await res.json();
+                if (data.success) {
+                    alert('✅ Base de datos cargada correctamente.');
+                } else {
+                    alert('❌ Error al procesar la lista.');
+                }
+            } catch (err) {
+                alert('❌ Error al subir el archivo Excel.');
+            }
         }
     </script>
 </body>
