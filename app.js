@@ -46,6 +46,8 @@ function guardarBD() {
     }
 }
 
+const UA_WIN = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36';
+
 const client = new Client({
     authStrategy: new LocalAuth(),
     takeoverOnConflict: true,
@@ -64,7 +66,8 @@ const client = new Client({
             '--disable-gpu',
             '--disable-background-timer-throttling',
             '--disable-backgrounding-occluded-windows',
-            '--disable-renderer-backgrounding'
+            '--disable-renderer-backgrounding',
+            `--user-agent=${UA_WIN}`
         ]
     }
 });
@@ -76,7 +79,7 @@ setInterval(async () => {
     if (client && client.info && client.info.wid) {
         try {
             const state = await client.getState();
-            console.log(`📡 Keep-Alive Estado WhatsApp: [${state}]`);
+            console.log(`📡 Ping WhatsApp: Estado [${state}]`);
         } catch (e) {
             console.error('⚠️ Keep-Alive Error:', e.message || e);
         }
@@ -86,6 +89,18 @@ setInterval(async () => {
 client.on('qr', async (qr) => {
     console.log('🔄 Nuevo Código QR generado.');
     estadoSesion = 'Esperando escaneo';
+    
+    // Inyectar Headers de Plataforma Windows directamente en Puppeteer
+    try {
+        if (client.pupPage) {
+            await client.pupPage.setUserAgent(UA_WIN);
+            await client.pupPage.setExtraHTTPHeaders({
+                'sec-ch-ua-platform': '"Windows"',
+                'sec-ch-ua-mobile': '?0'
+            });
+        }
+    } catch (eUa) {}
+
     try {
         qrActual = await QRCode.toDataURL(qr);
         io.emit('qr', qrActual);
@@ -96,7 +111,7 @@ client.on('qr', async (qr) => {
 });
 
 client.on('authenticated', () => {
-    console.log('🔑 Autenticación exitosa.');
+    console.log('🔑 Sesión autenticada.');
     estadoSesion = 'Conectado';
     qrActual = null;
     io.emit('estado', estadoSesion);
@@ -104,7 +119,7 @@ client.on('authenticated', () => {
 });
 
 client.on('ready', () => {
-    console.log('✅ WhatsApp Web inicializado y LISTO para enviar/recibir mensajes.');
+    console.log('✅ Cliente WhatsApp LISTO.');
     estadoSesion = 'Conectado';
     qrActual = null;
     io.emit('estado', estadoSesion);
@@ -119,20 +134,19 @@ client.on('auth_failure', (msg) => {
 });
 
 client.on('disconnected', (reason) => {
-    console.log('⚠️ Cliente WhatsApp desconectado:', reason);
+    console.log('⚠️ WhatsApp desconectado:', reason);
     estadoSesion = 'Desconectado';
     qrActual = null;
     io.emit('estado', estadoSesion);
 });
 
-// Respuestas automáticas de Gemini AI al recibir mensajes
 client.on('message', async (msg) => {
     if (msg.from.endsWith('@g.us') || msg.from.endsWith('@newsletter') || msg.from.includes('status@broadcast')) return;
 
     const numero = msg.from.replace('@c.us', '');
     const textoCliente = msg.body;
 
-    console.log(`📩 Mensaje recibido de ${numero}: "${textoCliente}"`);
+    console.log(`📩 Mensaje de ${numero}: "${textoCliente}"`);
 
     if (!historialChats[numero]) historialChats[numero] = [];
     const msgEntrante = { emisor: 'cliente', texto: textoCliente, hora: new Date().toLocaleTimeString() };
@@ -153,30 +167,19 @@ client.on('message', async (msg) => {
 
     if (prospecto.iaActiva !== false) {
         try {
-            // Intenta enviar presencia 'escribiendo', pero con fallback seguro si falla
-            try {
-                const chat = await msg.getChat();
-                await chat.sendStateTyping();
-            } catch (errTyping) {
-                console.log('Aviso typing:', errTyping.message);
-            }
-
             const promptCompleto = `${config.systemPrompt}\n\nEl cliente dijo: "${textoCliente}".`;
             const response = await ai.models.generateContent({
                 model: 'gemini-2.5-flash',
                 contents: promptCompleto
             });
 
-            await new Promise(r => setTimeout(r, 1500));
-
             const textoBot = response.text;
-            await client.sendMessage(msg.from, textoBot);
-            console.log(`🤖 Respuesta enviada a ${numero}: "${textoBot.substring(0, 40)}..."`);
+            
+            // Pausa natural simulando escritura humana sin bloquear el socket
+            await new Promise(r => setTimeout(r, 2000));
 
-            try {
-                const chat = await msg.getChat();
-                await chat.clearState();
-            } catch (e) {}
+            await client.sendMessage(msg.from, textoBot);
+            console.log(`🤖 Respuesta enviada a ${numero}`);
 
             const msgBot = { emisor: 'bot', texto: textoBot, hora: new Date().toLocaleTimeString() };
             historialChats[numero].push(msgBot);
@@ -184,25 +187,26 @@ client.on('message', async (msg) => {
 
             io.emit('nuevo_mensaje', { telefono: numero, mensaje: msgBot, prospectos, metricas: calcularMetricas() });
         } catch (err) {
-            console.error('❌ Error procesando Gemini AI:', err.message || err);
+            console.error('❌ Error Gemini AI:', err.message || err);
         }
     }
 });
 
+// Prospección con pausa anti-saturación para NO congelar el celular
 async function iniciarProspeccionMasiva() {
     if (prospectandoEnProgreso) return;
     if (!client.info || !client.info.wid) {
-        console.log('⏳ Prospección cancelada: No hay cuenta de WhatsApp conectada aún.');
+        console.log('⏳ Prospección en espera: No hay WhatsApp vinculado.');
         return;
     }
 
     prospectandoEnProgreso = true;
-    console.log('🚀 Iniciando prospección masiva paso a paso...');
+    console.log('🚀 Iniciando prospección masiva progresiva...');
 
     for (let p of prospectos) {
         if (p.estado === 'Pendiente' || p.estado === 'Error') {
             if (enviosHoy >= (config.limiteDiario || 100)) {
-                console.log('🛑 Límite diario alcanzado.');
+                console.log('🛑 Límite diario de envíos alcanzado.');
                 break;
             }
 
@@ -210,19 +214,16 @@ async function iniciarProspeccionMasiva() {
                 let telLimpio = String(p.telefono).replace(/\D/g, '');
                 if (!telLimpio.startsWith('57') && telLimpio.length === 10) telLimpio = '57' + telLimpio;
 
-                console.log(`🔍 Verificando número WhatsApp para ${p.empresa} (${telLimpio})...`);
-                let numberDetails = await client.getNumberId(telLimpio);
-                let chatId = numberDetails ? numberDetails._serialized : telLimpio + '@c.us';
+                let chatId = telLimpio + '@c.us';
 
                 let mensajeInicial = config.mensajePlantilla || '¡Hola {Nombre}! Conoce Zenix POS.';
                 mensajeInicial = mensajeInicial.replace(/\{Nombre\}/g, p.empresa || 'Cliente');
                 mensajeInicial = mensajeInicial.replace(/\{Empresa\}/g, p.empresa || 'su negocio');
 
-                console.log(`📤 Enviando mensaje masivo a ${p.empresa} (${chatId})...`);
+                console.log(`📤 Enviando a ${p.empresa} (${chatId})...`);
 
-                // Enviar mensaje directamente para evitar bloqueos
                 await client.sendMessage(chatId, mensajeInicial);
-                console.log(`✅ Mensaje enviado exitosamente a ${p.empresa}`);
+                console.log(`✅ Enviado a ${p.empresa}`);
 
                 p.estado = 'Contactado';
                 p.ultimoMensaje = mensajeInicial;
@@ -239,7 +240,7 @@ async function iniciarProspeccionMasiva() {
                 const maxMs = (config.delayMax || 35) * 1000;
                 const delayMs = Math.floor(Math.random() * (maxMs - minMs + 1)) + minMs;
 
-                console.log(`⏱️ Esperando ${Math.round(delayMs/1000)} segundos antes del siguiente envío...`);
+                console.log(`⏱️ Pausa de ${Math.round(delayMs/1000)}s antes del próximo envío...`);
                 await new Promise(resolve => setTimeout(resolve, delayMs));
             } catch (e) {
                 console.error(`❌ Error enviando a ${p.telefono}:`, e.message || e);
@@ -250,7 +251,7 @@ async function iniciarProspeccionMasiva() {
         }
     }
     prospectandoEnProgreso = false;
-    console.log('🏁 Prospección masiva finalizada.');
+    console.log('🏁 Prospección completada.');
 }
 
 function calcularMetricas() {
@@ -283,7 +284,7 @@ app.get('/api/metricas', (req, res) => res.json(calcularMetricas()));
 
 app.post('/api/reset-sesion', async (req, res) => {
     try {
-        console.log('🔄 Reiniciando sesión y borrando credenciales...');
+        console.log('🔄 Eliminando credenciales y generando nuevo QR...');
         estadoSesion = 'Desconectado';
         qrActual = null;
         io.emit('estado', estadoSesion);
@@ -295,16 +296,16 @@ app.post('/api/reset-sesion', async (req, res) => {
         await client.destroy();
         client.initialize();
 
-        res.json({ success: true, message: 'Sesión borrada exitosamente.' });
+        res.json({ success: true, message: 'Sesión borrada. Escanea el nuevo QR.' });
     } catch (e) {
-        console.error('Error al reiniciar sesión:', e);
+        console.error('Error reset:', e);
         res.status(500).json({ error: 'Error reseteando sesión' });
     }
 });
 
 app.post('/api/iniciar-prospeccion', (req, res) => {
     iniciarProspeccionMasiva();
-    res.json({ success: true, message: 'Prospección disparada' });
+    res.json({ success: true, message: 'Prospección iniciada' });
 });
 
 app.post('/api/config', (req, res) => {
@@ -338,8 +339,7 @@ app.post('/api/enviar-manual', async (req, res) => {
         let telLimpio = String(telefono).replace(/\D/g, '');
         if (!telLimpio.startsWith('57') && telLimpio.length === 10) telLimpio = '57' + telLimpio;
         
-        let numberDetails = await client.getNumberId(telLimpio);
-        let chatId = numberDetails ? numberDetails._serialized : telLimpio + '@c.us';
+        let chatId = telLimpio + '@c.us';
 
         console.log(`📤 Envío manual a ${chatId}: "${texto}"`);
         await client.sendMessage(chatId, texto);
@@ -355,11 +355,12 @@ app.post('/api/enviar-manual', async (req, res) => {
         io.emit('nuevo_mensaje', { telefono, mensaje: msgManual, prospectos, metricas: calcularMetricas() });
         res.json({ success: true });
     } catch (e) {
-        console.error("❌ Error en envío manual:", e.message || e);
-        res.status(500).json({ error: 'Error enviando mensaje manual' });
+        console.error("❌ Error envío manual:", e.message || e);
+        res.status(500).json({ error: 'Error enviando mensaje' });
     }
 });
 
+// Importación de Excel SIN AUTO-DISPARO INMEDIATO para dar tiempo a la sincronización
 app.post('/api/cargar-excel', upload.single('archivo'), (req, res) => {
     try {
         const workbook = xlsx.readFile(req.file.path);
@@ -388,10 +389,6 @@ app.post('/api/cargar-excel', upload.single('archivo'), (req, res) => {
         fs.unlinkSync(req.file.path);
         
         io.emit('actualizar_lista', { prospectos, metricas: calcularMetricas() });
-        
-        setTimeout(() => {
-            iniciarProspeccionMasiva();
-        }, 1000);
         
         res.json({ success: true, agregados, total: prospectos.length });
     } catch (e) {
